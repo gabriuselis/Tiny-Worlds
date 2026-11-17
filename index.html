@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <title>Tiny Worlds</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <canvas id="game-canvas" touch-action="none"></canvas>
+
+    <script>
+(function () {
+  'use strict';
+
+  // Create red error box immediately, before any module loads
+  var box = document.createElement('div');
+  box.id = 'boot-error-box';
+  box.style.cssText = 'position:fixed;top:8px;left:8px;right:8px;z-index:2147483647;pointer-events:none;font-family:monospace;font-size:11px;color:#ff4d4d;background:rgba(0,0,0,0.85);padding:8px 10px;border-radius:6px;border:2px solid #ff4d4d;line-height:1.4;max-width:96vw;white-space:pre-wrap;word-break:break-all;display:none;';
+  document.body.appendChild(box);
+
+  function show(msg) {
+    box.textContent = msg;
+    box.style.display = 'block';
+    console.error('BOOT ERROR', msg);
+  }
+
+  function showErr(msg, err) {
+    var stack = err && err.stack ? err.stack.split('\n').slice(0, 3).join('\n') : '';
+    box.textContent = msg + (stack ? '\n' + stack : '');
+    box.style.display = 'block';
+    console.error('BOOT ERROR', msg, err);
+  }
+
+  window.addEventListener('error', function (e) {
+    showErr('window.error: ' + e.message + ' at ' + (e.filename || '?') + ':' + (e.lineno || '?') + ':' + (e.colno || '?'), e.error);
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    showErr('unhandledrejection: ' + String(e.reason), e.reason);
+  });
+
+  // Write Loading...
+  var loading = document.createElement('div');
+  loading.id = 'boot-loading';
+  loading.textContent = 'Loading...';
+  loading.style.cssText = 'position:fixed;top:8px;left:8px;z-index:2147483646;pointer-events:none;font-family:monospace;font-size:12px;color:#0f0;background:rgba(0,0,0,0.8);padding:6px 10px;border-radius:6px;border:1px solid #0f0;';
+  document.body.appendChild(loading);
+
+  var mainStarted = false;
+  window.__mainStarted = function () { mainStarted = true; };
+
+  // After 3 seconds, if main.ts hasn't started, show diagnostics
+  setTimeout(function () {
+    if (mainStarted) return;
+    var entries = performance.getEntriesByType('resource');
+    var failed = entries.filter(function (e) { return e.responseStatus === 0 || e.name.indexOf('main.ts') >= 0 || e.name.indexOf('.js') >= 0; });
+    var lines = failed.map(function (e) { return '  ' + e.name + ' status=' + (e.responseStatus || 'n/a') + ' type=' + e.initiatorType; }).join('\n');
+    show('main.ts did not start after 3s.\nFailed/missing resources:\n' + lines);
+  }, 3000);
+})();
+    </script>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

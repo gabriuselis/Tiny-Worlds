@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Touch Test</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b1020; touch-action: none !important; overscroll-behavior: none; font-family: monospace; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none !important; }
+  #log { position: fixed; bottom: 8px; left: 8px; z-index: 9999; color: #0f0; background: rgba(0,0,0,0.7); padding: 6px 10px; border-radius: 6px; border: 1px solid #0f0; font-size: 11px; pointer-events: none; max-width: 95vw; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<canvas id="tc"></canvas>
+<div id="log">init</div>
+<script>
+const canvas = document.getElementById('tc');
+const ctx = canvas.getContext('2d');
+const log = document.getElementById('log');
+
+function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+window.addEventListener('resize', resize);
+resize();
+
+let x = canvas.width / 2, y = canvas.height / 2;
+let vx = 0, vy = 0;
+const counts = { touchstart: 0, touchmove: 0, touchend: 0, touchcancel: 0, pointerdown: 0, pointermove: 0, pointerup: 0, pointercancel: 0 };
+let lastTarget = '';
+let lastEl = '';
+
+function count(type) {
+  return (e) => {
+    counts[type]++;
+    const t = e.target?.constructor?.name ?? '?';
+    let el = document.elementFromPoint(
+      'clientX' in e ? e.clientX : (e.touches[0]?.clientX ?? 0),
+      'clientY' in e ? e.clientY : (e.touches[0]?.clientY ?? 0)
+    );
+    lastTarget = t;
+    lastEl = el ? `${el.tagName}.${el.id ? '#' + el.id : ''}.${el.className ? '.' + String(el.className).split(' ').join('.') : ''}` : 'none';
+    updateLog();
+    if (type === 'touchmove' || type === 'pointermove') e.preventDefault();
+  };
+}
+
+window.addEventListener('touchstart', count('touchstart'), { capture: true, passive: true });
+window.addEventListener('touchmove', count('touchmove'), { capture: true, passive: false });
+window.addEventListener('touchend', count('touchend'), { capture: true, passive: true });
+window.addEventListener('touchcancel', count('touchcancel'), { capture: true, passive: true });
+window.addEventListener('pointerdown', count('pointerdown'), { capture: true, passive: true });
+window.addEventListener('pointermove', count('pointermove'), { capture: true, passive: false });
+window.addEventListener('pointerup', count('pointerup'), { capture: true, passive: true });
+window.addEventListener('pointercancel', count('pointercancel'), { capture: true, passive: true });
+
+function updateLog() {
+  log.textContent = `ts=${counts.touchstart} tm=${counts.touchmove} te=${counts.touchend} tc=${counts.touchcancel} | pd=${counts.pointerdown} pm=${counts.pointermove} pu=${counts.pointerup} pc=${counts.pointercancel}\ntarget=${lastTarget}\nel=${lastEl}\nx=${x.toFixed(0)} y=${y.toFixed(0)}`;
+}
+
+function draw() {
+  ctx.fillStyle = '#0b1020';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#0f0';
+  ctx.beginPath();
+  ctx.arc(x, y, 30, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.stroke();
+  updateLog();
+  requestAnimationFrame(draw);
+}
+draw();
+
+// Move circle with drag
+let dragX = 0, dragY = 0, isDragging = false;
+window.addEventListener('pointerdown', (e) => {
+  if (e.target.closest('button, [data-ui]')) return;
+  isDragging = true;
+  dragX = e.clientX - x;
+  dragY = e.clientY - y;
+}, { capture: true });
+window.addEventListener('pointermove', (e) => {
+  if (!isDragging) return;
+  x = e.clientX - dragX;
+  y = e.clientY - dragY;
+}, { capture: true });
+window.addEventListener('pointerup', () => { isDragging = false; }, { capture: true });
+</script>
+</body>
+</html>

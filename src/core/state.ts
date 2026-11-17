@@ -1,0 +1,130 @@
+import Decimal from 'break_infinity.js';
+
+export type PlanetId = 'verdant' | 'rocky' | 'crystalis' | 'forge' | 'hub';
+export type Role = 'planter' | 'lumberjack' | 'carrier' | 'miner' | 'prospector' | 'engineer';
+export type ResourceId = 'wood' | 'stone' | 'ore' | 'crystal' | 'planks' | 'bricks' | 'parts';
+export type UpgradeId = 'planter' | 'lumberjack' | 'carrier' | 'plantSpeed' | 'chopSpeed' | 'woodValue' | 'tapPower' | 'maxTrees';
+export type PerkId = 'offlineCap' | 'startWorkers' | 'unlockEarly' | 'autoBuy';
+
+export type Vec3 = { x: number; y: number; z: number };
+
+export type NodeStage = 'sapling' | 'growing' | 'ready' | 'depleted';
+
+export type PlotStage = 'empty' | 'sapling' | 'medium' | 'grown' | 'stump';
+
+export type WorkerState =
+  | 'idle'
+  | 'dropping'
+  | 'walk'
+  | 'walkToPost'
+  | 'plant'
+  | 'chop'
+  | 'pickup'
+  | 'deliver'
+  | 'wander';
+
+export interface Node {
+  id: number;
+  type: 'tree' | 'rock' | 'crystal';
+  pos: Vec3;
+  stage: NodeStage;
+  timer: number;
+  reservedBy?: number;
+  resourceType?: ResourceId;
+}
+
+export interface Plot {
+  id: number;
+  row: number;
+  col: number;
+  dir: Vec3;
+  state: PlotStage;
+  timer: number;
+  reservedBy?: number;
+  woodLeft: number;
+}
+
+export interface Worker {
+  id: number;
+  role: Role;
+  pos: Vec3;
+  state: WorkerState;
+  target?: number; // plot id or -1 for post
+  carrying?: { res: ResourceId; amt: number };
+  level: number;
+  cosmetic: { hat: string; color: string };
+  name: string;
+  stuckTimer: number;
+  dropProgress?: number; // 0..1 sky-drop animation
+}
+
+export interface PlanetState {
+  unlocked: boolean;
+  resources: Record<ResourceId, Decimal>;
+  plots: Plot[];
+  workers: Worker[];
+  buildings: Record<string, number>;
+  treesHarvested: number;
+  toolsCrafted: number;
+  usablePlotCount: number;
+}
+
+export interface QuestState {
+  id: string;
+  completed: boolean;
+  claimed: boolean;
+  progress: number;
+  target: number;
+}
+
+export interface PrestigeState {
+  count: number;
+  starDust: Decimal;
+  perks: Record<PerkId, number>;
+}
+
+export interface GameState {
+  version: number;
+  lastSaved: number;
+  currencies: { credits: Decimal; gems: number; starDust: Decimal };
+  planets: Record<PlanetId, PlanetState>;
+  upgrades: Record<UpgradeId, number>;
+  prestige: PrestigeState;
+  quests: QuestState[];
+  stats: { treesPlanted: number; woodSold: Decimal; lifetimeCredits: Decimal };
+  settings: { sound: boolean; quality: 'low' | 'med' | 'high' };
+}
+
+export const SAVE_VERSION = 2;
+
+export function initialState(): GameState {
+  const zero = new Decimal(0);
+  return {
+    version: SAVE_VERSION,
+    lastSaved: Date.now(),
+    currencies: { credits: new Decimal(10), gems: 0, starDust: zero },
+    planets: {
+      verdant: {
+        unlocked: true,
+        resources: { wood: zero, stone: zero, ore: zero, crystal: zero, planks: zero, bricks: zero, parts: zero },
+        plots: [],
+        workers: [],
+        buildings: {},
+        treesHarvested: 0,
+        toolsCrafted: 0,
+        usablePlotCount: 0,
+      },
+      rocky: { unlocked: false, resources: { wood: zero, stone: zero, ore: zero, crystal: zero, planks: zero, bricks: zero, parts: zero }, plots: [], workers: [], buildings: {}, treesHarvested: 0, toolsCrafted: 0, usablePlotCount: 0 },
+      crystalis: { unlocked: false, resources: { wood: zero, stone: zero, ore: zero, crystal: zero, planks: zero, bricks: zero, parts: zero }, plots: [], workers: [], buildings: {}, treesHarvested: 0, toolsCrafted: 0, usablePlotCount: 0 },
+      forge: { unlocked: false, resources: { wood: zero, stone: zero, ore: zero, crystal: zero, planks: zero, bricks: zero, parts: zero }, plots: [], workers: [], buildings: {}, treesHarvested: 0, toolsCrafted: 0, usablePlotCount: 0 },
+      hub: { unlocked: false, resources: { wood: zero, stone: zero, ore: zero, crystal: zero, planks: zero, bricks: zero, parts: zero }, plots: [], workers: [], buildings: {}, treesHarvested: 0, toolsCrafted: 0, usablePlotCount: 0 },
+    },
+    upgrades: { planter: 0, lumberjack: 0, carrier: 0, plantSpeed: 0, chopSpeed: 0, woodValue: 0, tapPower: 0, maxTrees: 0 },
+    prestige: { count: 0, starDust: zero, perks: { offlineCap: 0, startWorkers: 0, unlockEarly: 0, autoBuy: 0 } },
+    quests: [],
+    stats: { treesPlanted: 0, woodSold: zero, lifetimeCredits: zero },
+    settings: { sound: true, quality: 'med' },
+  };
+}
+
+export const INITIAL_PLANTER = 'planter';
