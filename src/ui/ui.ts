@@ -1,10 +1,11 @@
-import Decimal from 'break_infinity.js';
+﻿import Decimal from 'break_infinity.js';
 import { PLANETS } from '../core/config/planets';
 import { costOf } from '../core/config/workers';
-import { upgradeCost } from '../core/config/upgrades';
+import { upgradeCost, upgradeMaxLevel, plantSpeedMult, chopSpeedMult, woodValueMult } from '../core/config/upgrades';
 import { incomePerSecond } from '../core/economy';
 import { format, gte } from '../core/money';
 import { PLOT_COUNT } from '../core/config/world';
+import { logsPerMinute } from '../core/wood';
 import type { GameState, Role, UpgradeId } from '../core/state';
 
 // ============================================================
@@ -160,7 +161,7 @@ const HIRE_ROLES: Record<UpgradeId, Role | null> = {
 };
 
 // Cards visible but locked (not yet playable) in this stage; only Planter is hireable.
-const LOCKED_CARDS: UpgradeId[] = ['lumberjack', 'carrier', 'plantSpeed', 'chopSpeed', 'woodValue'];
+const LOCKED_CARDS: UpgradeId[] = [];
 
 const HIRE_VALUE_LABEL: Partial<Record<Role, string>> = {
   planter: 'Planters',
@@ -184,16 +185,18 @@ type ReportError = (msg: string) => void;
 
 export class UI {
   private root: HTMLElement;
-  private speedActive = false;
+private speedActive = false;
   private autoActive = false;
   private hireHandlers: Partial<Record<Role, () => void>> = {};
-  private upgradeHandler?: (id: UpgradeId) => void;
+  private upgradeHandler: ((id: UpgradeId) => void) | null = null;
   private reportError?: ReportError;
 
   private elCredits!: HTMLElement;
   private elGems!: HTMLElement;
   private elIncome!: HTMLElement;
   private elWood!: HTMLElement;
+  private elWoodRate!: HTMLElement;
+  private elLogsWaiting!: HTMLElement;
   private elPlanetName!: HTMLElement;
   private elGoal!: HTMLElement;
   private elProgressLine!: HTMLElement;
@@ -206,6 +209,8 @@ export class UI {
   private lastGems = '';
   private lastIncome = '';
   private lastWood = '';
+  private lastWoodRate = '';
+  private lastLogsWaiting = '';
   private lastGoal = '';
   private lastSpeedActive = false;
   private lastAutoActive = false;
@@ -215,10 +220,12 @@ export class UI {
   private progressLines: HTMLElement[] = [];
 
   // Upgrade card element refs (built once)
-  private cardBtns = new Map<UpgradeId, HTMLButtonElement>();
+private cardBtns = new Map<UpgradeId, HTMLButtonElement>();
   private cardVals = new Map<UpgradeId, HTMLElement>();
   private cardCosts = new Map<UpgradeId, HTMLElement>();
-  private lastCardValues = new Map<UpgradeId, { value: string; cost: string; affordable: boolean }>();
+  private cardLabels = new Map<UpgradeId, HTMLElement>();
+  private cardUpgradeLines = new Map<UpgradeId, HTMLElement>();
+  private lastCardValues = new Map<UpgradeId, { value: string; cost: string; affordable: boolean; line: string; label: string }>();
 
   // Dev menu handler callbacks
   private devHandlers: Partial<Record<string, () => void>> = {};
@@ -305,7 +312,8 @@ export class UI {
 
   <div class="stats-row" data-ui data-area-bottom>
     <div class="stat">Income <span class="value" id="ui-income">0/s</span></div>
-    <div class="stat">Wood <span class="value" id="ui-wood">0</span></div>
+    <div class="stat">Wood <span class="value" id="ui-wood">0</span><span class="wood-rate" id="ui-wood-rate">0/min</span></div>
+    <div class="stat">Logs waiting <span class="value" id="ui-logs">0</span></div>
     <div class="stats-actions">
       <button class="btn-speed" id="ui-speed">2X SPEED</button>
       <button class="btn-auto" id="ui-auto">AUTO BUY</button>
@@ -337,7 +345,7 @@ export class UI {
         dot.title = 'Planet 2: Rocky';
         const icon = document.createElement('span');
         icon.className = 'icon';
-        icon.textContent = '🔒';
+        icon.textContent = '\u{1F512}';
         dot.appendChild(icon);
       }
       this.progressDots.push(dot);
@@ -357,6 +365,8 @@ export class UI {
       this.elGems = this.el('ui-gems');
       this.elIncome = this.el('ui-income');
       this.elWood = this.el('ui-wood');
+      this.elWoodRate = this.el('ui-wood-rate');
+      this.elLogsWaiting = this.el('ui-logs');
       this.elPlanetName = this.el('ui-planet-name');
       this.elGoal = this.el('ui-goal');
       this.elProgressLine = this.el('ui-progress-line');
@@ -385,16 +395,30 @@ export class UI {
         card.className = 'upgrade-card';
         card.id = `ui-card-${s.id}`;
 
-        const nameDiv = document.createElement('div');
+const nameDiv = document.createElement('div');
         nameDiv.className = 'card-name';
         nameDiv.textContent = s.label;
         card.appendChild(nameDiv);
 
-        const valDiv = document.createElement('div');
-        valDiv.className = 'card-value';
-        valDiv.id = `ui-val-${s.id}`;
-        valDiv.textContent = '0';
-        card.appendChild(valDiv);
+        const isHire = !!HIRE_ROLES[s.id];
+
+        if (isHire) {
+          // Hire cards: title, "Role: n" count line, UPGRADE button with cost.
+          const valDiv = document.createElement('div');
+          valDiv.className = 'card-value';
+          valDiv.id = `ui-val-${s.id}`;
+          valDiv.textContent = '0';
+          card.appendChild(valDiv);
+          this.cardVals.set(s.id, valDiv);
+        } else {
+          // Upgrade cards: title, ONE line "Lv n | Now: -29%" (or MAX), button.
+          const lineDiv = document.createElement('div');
+          lineDiv.className = 'card-upgrade-line';
+          lineDiv.id = `ui-upgrade-line-${s.id}`;
+          lineDiv.textContent = 'Lv 0 | Now: 0%';
+          card.appendChild(lineDiv);
+          this.cardUpgradeLines.set(s.id, lineDiv);
+        }
 
         const btn = document.createElement('button');
         btn.className = 'upgrade-btn';
@@ -402,6 +426,8 @@ export class UI {
         btn.dataset.id = s.id;
 
         const span = document.createElement('span');
+        span.className = 'btn-label';
+        span.id = `ui-btn-label-${s.id}`;
         span.textContent = 'UPGRADE';
         btn.appendChild(span);
 
@@ -415,8 +441,8 @@ export class UI {
         this.elUpgradePanel.appendChild(card);
 
         this.cardBtns.set(s.id, btn);
-        this.cardVals.set(s.id, valDiv);
         this.cardCosts.set(s.id, costSpan);
+        this.cardLabels.set(s.id, span);
 
         btn.onclick = () => {
           const id = s.id;
@@ -437,6 +463,17 @@ export class UI {
 
   setUpgradeHandler(fn: (id: UpgradeId) => void): void {
     this.upgradeHandler = fn;
+  }
+
+  /** Quick 1.0 -> 1.25 -> 1.0 pulse on the Wood number. */
+  bumpWood(): void {
+    try {
+      const el = this.elWood;
+      el.classList.remove('bump');
+      void el.offsetWidth;
+      el.classList.add('bump');
+      window.setTimeout(() => el.classList.remove('bump'), 220);
+    } catch { /* ignore */ }
   }
 
   isSpeedActive(): boolean {
@@ -471,10 +508,25 @@ export class UI {
     }
 
     const verdant = state.planets.verdant;
-    const woodText = fmt(verdant.resources.wood);
+    const woodText = fmt(state.wood);
     if (woodText !== this.lastWood) {
       this.elWood.textContent = woodText;
       this.lastWood = woodText;
+    }
+    const rateText = `${logsPerMinute(state)}/min`;
+    if (rateText !== this.lastWoodRate) {
+      this.elWoodRate.textContent = rateText;
+      this.lastWoodRate = rateText;
+    }
+
+    let logsWaiting = 0;
+    for (const p of verdant.plots) {
+      if (p.state === 'logs') logsWaiting += p.woodLeft ?? 0;
+    }
+    const logsText = String(logsWaiting);
+    if (logsText !== this.lastLogsWaiting) {
+      this.elLogsWaiting.textContent = logsText;
+      this.lastLogsWaiting = logsText;
     }
 
     this.elPlanetName.textContent = PLANETS.verdant.name;
@@ -508,16 +560,20 @@ export class UI {
       this.lastAutoActive = this.autoActive;
     }
 
-    // Upgrade cards (only patch when value/cost/affordable changes)
+// Upgrade cards (only patch when value/cost/affordable changes)
     for (const s of CARD_SPECS) {
       const level = state.upgrades[s.id];
+      const maxLevel = upgradeMaxLevel(s.id);
+      const isHire = !!HIRE_ROLES[s.id];
+
       let valueText: string;
       let cost: Decimal;
       let affordable: boolean;
-      let role: Role | null = null;
+      let labelText = 'UPGRADE';
+      let lineText = '';
 
-      if (HIRE_ROLES[s.id]) {
-        role = HIRE_ROLES[s.id]!;
+      if (isHire) {
+        const role = HIRE_ROLES[s.id]!;
         const existing = verdant.workers.filter((w) => w.role === role).length;
         valueText = `${HIRE_VALUE_LABEL[role] ?? role}: ${existing}`;
         cost = costOf(role, existing);
@@ -526,19 +582,36 @@ export class UI {
         valueText = String(level);
         cost = upgradeCost(s.id, level);
         affordable = gte(c, cost);
+        if (maxLevel !== undefined && level >= maxLevel) {
+          labelText = 'MAX';
+          affordable = false;
+        } else {
+          labelText = 'UPGRADE';
+        }
+        // One-line summary: "Lv n | Now: -29%" (or "+30%")
+        let pct = 0;
+        if (s.id === 'plantSpeed') pct = (1 - plantSpeedMult(level)) * 100;
+        else if (s.id === 'chopSpeed') pct = (1 - chopSpeedMult(level)) * 100;
+        else if (s.id === 'woodValue') pct = (woodValueMult(level) - 1) * 100;
+        const sign = pct < 0 ? '' : '+';
+        lineText = `Lv ${level} | Now: ${sign}${pct.toFixed(0)}%`;
       }
       if (LOCKED_CARDS.includes(s.id)) affordable = false;
 
       const costText = `\u{1F4B0} ${format(cost)}`;
-      const cardState = { value: valueText, cost: costText, affordable };
+      const cardState = { value: valueText, cost: costText, affordable, line: lineText, label: labelText };
       const last = this.lastCardValues.get(s.id);
-      if (!last || last.value !== cardState.value || last.cost !== cardState.cost || last.affordable !== cardState.affordable) {
+      if (!last || last.value !== cardState.value || last.cost !== cardState.cost || last.affordable !== cardState.affordable || last.line !== cardState.line || last.label !== cardState.label) {
         this.lastCardValues.set(s.id, cardState);
-        const valEl = this.cardVals.get(s.id)!;
+        const valEl = this.cardVals.get(s.id);
         const costEl = this.cardCosts.get(s.id)!;
         const btn = this.cardBtns.get(s.id)!;
-        valEl.textContent = valueText;
+        const labEl = this.cardLabels.get(s.id)!;
+        const lineEl = this.cardUpgradeLines.get(s.id);
+        if (valEl) valEl.textContent = valueText;
+        if (lineEl) lineEl.textContent = lineText;
         costEl.textContent = costText;
+        labEl.textContent = labelText;
         if (!affordable) {
           btn.classList.add('disabled');
           btn.disabled = true;
@@ -566,9 +639,10 @@ function toDecimal(value: number | string | Decimal): Decimal {
 function fmt(d: number | string | Decimal): string {
   const dec = toDecimal(d);
   const n = dec.toNumber();
-  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'b';
-  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'm';
-  if (n >= 1e3) return (n / 1e3).toFixed(2) + 'k';
+  const trim = (v: number): string => Number(v.toFixed(2)).toString();
+  if (n >= 1e9) return trim(n / 1e9) + 'b';
+  if (n >= 1e6) return trim(n / 1e6) + 'm';
+  if (n >= 1e3) return trim(n / 1e3) + 'k';
   return Math.floor(n).toString();
 }
 
@@ -630,11 +704,25 @@ function createDevMenu(): void {
       <button type="button" class="dev-btn dev-speed" id="dev-speed-5">Speed x5</button>
       <button type="button" class="dev-btn dev-speed" id="dev-speed-20">Speed x20</button>
     </div>
+<div class="dev-menu-section">
+      <div class="dev-subtitle">Upgrades</div>
+      <button type="button" class="dev-btn" id="dev-upgrades-plus1">Upgrades +1 all</button>
+      <button type="button" class="dev-btn" id="dev-upgrades-reset">Upgrades reset</button>
+      <div class="dev-stat" id="dev-upgrade-mult">plant 1.00x | chop 1.00x | value 1.00x</div>
+    </div>
     <div class="dev-menu-section">
       <button type="button" class="dev-btn" id="dev-toggle-grid">Show grid</button>
       <button type="button" class="dev-btn" id="dev-surface-check">Surface check</button>
       <button type="button" class="dev-btn" id="dev-plot-dots">Plot dots</button>
       <button type="button" class="dev-btn" id="dev-workers-debug">Workers debug</button>
+    </div>
+    <div class="dev-menu-section">
+      <div class="dev-subtitle">Trees &amp; wood</div>
+      <button type="button" class="dev-btn" id="dev-grow-all">Grow all trees</button>
+      <button type="button" class="dev-btn" id="dev-spawn-piles">Spawn 10 log piles</button>
+      <button type="button" class="dev-btn" id="dev-add-wood">+10 wood</button>
+      <button type="button" class="dev-btn" id="dev-test-particles">Emit test particles</button>
+      <button type="button" class="dev-btn" id="dev-wood-test">Run wood self-test</button>
     </div>
     <div class="dev-menu-section">
       <div class="dev-subtitle">Display</div>
@@ -708,15 +796,15 @@ function onDevMenuEvent(e: Event): void {
     try {
       fn();
       logEvent(`Dev: ${label} OK`);
-      showToast(`Done: ${label}`);
+      // Actions show their own toast with real numbers; don't overwrite it.
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logEvent(`Dev: ${label} FAILED: ${msg}`);
-      showToast(`Fail: ${label}`);
+      showToast(`Fail: ${label}: ${msg}`);
     }
   };
 
-  const actions: { [id: string]: () => void } = {
+const actions: { [id: string]: () => void } = {
     'dev-fill': () => (window as any).__fillTrees?.(),
     'dev-clear': () => (window as any).__clearTrees?.(),
     'dev-reset': () => (window as any).__resetGame?.(),
@@ -732,11 +820,18 @@ function onDevMenuEvent(e: Event): void {
     'dev-surface-check': () => (window as any).__surfaceCheck?.(),
     'dev-plot-dots': () => (window as any).__togglePlotDots?.(),
     'dev-workers-debug': () => { const d = (window as any).__getWorkersDebug?.(); if (d) { logEvent(d); showToast(d.split('\n').slice(0, 5).join(' | ')); } },
+    'dev-grow-all': () => (window as any).__growAllTrees?.(),
+    'dev-spawn-piles': () => (window as any).__spawnLogPiles?.(10),
+    'dev-add-wood': () => (window as any).__addWood?.(10),
+    'dev-test-particles': () => (window as any).__emitTestParticles?.(),
+    'dev-wood-test': () => (window as any).__runWoodSelfTest?.(),
     'dev-toggle-fps': () => (window as any).__toggleFps?.(),
     'dev-toggle-log': () => (window as any).__toggleLog?.(),
     'dev-self-test': runSelfTest,
     'dev-test-tree': () => (window as any).__testTree?.(),
     'dev-test-worker': () => (window as any).__testWorker?.(),
+    'dev-upgrades-plus1': () => (window as any).__upgradeAllPlus1?.(),
+    'dev-upgrades-reset': () => (window as any).__upgradeReset?.(),
   };
 
   if (isClose) { closeDevDialog(); return; }
@@ -800,38 +895,99 @@ function updateDevStats(plotCount?: number, fps?: number): void {
   if (elDevCoverageDetail && (window as any).__getCoverageStats) {
     elDevCoverageDetail.textContent = (window as any).__getCoverageStats();
   }
+  // Upgrade multiplier line (dev menu)
+  const elMult = document.getElementById('dev-upgrade-mult');
+  if (elMult && (window as any).__upgradeMultipliers) {
+    const m = (window as any).__upgradeMultipliers();
+    elMult.textContent = `plant ${m.plant.toFixed(2)}x | chop ${m.chop.toFixed(2)}x | value ${(m.value * 100).toFixed(0)}%`;
+  }
 }
 
+interface StateSummary {
+  plots: number;
+  empty: number;
+  planted: number;
+  grown: number;
+  sapling: number;
+  falling?: number;
+  logs?: number;
+  harvested?: number;
+  visible: number;
+  workers: number;
+  credits: string;
+}
+
+let selfTestRunning = false;
+
+// Automated end-to-end check of the dev actions on the shared game object.
 function runSelfTest(): void {
-  const results: string[] = [];
-  let pass = 0;
+  if (selfTestRunning) { showToast('Self-test already running'); return; }
+  selfTestRunning = true;
+
+  const summary = (): StateSummary => (window as any).__getStateSummary?.() ?? {
+    plots: 0, empty: 0, planted: 0, grown: 0, sapling: 0, visible: 0, workers: 0, credits: '?',
+  };
+  const wait = (ms: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, ms));
+  const results: { label: string; ok: boolean }[] = [];
   if (elDevResults) elDevResults.textContent = '';
+
   const add = (label: string, ok: boolean): void => {
-    results.push(`${label}: ${ok ? 'PASS' : 'FAIL'}`);
-    if (ok) pass++;
+    results.push({ label, ok });
     logEvent(`Self-test: ${label} ${ok ? 'PASS' : 'FAIL'}`);
     if (elDevResults) {
       const line = document.createElement('div');
-      line.textContent = `${label}: ${ok ? 'PASS' : 'FAIL'}`;
+      line.textContent = `${ok ? 'PASS' : 'FAIL'} - ${label}`;
       line.className = ok ? 'dev-self-pass' : 'dev-self-fail';
       elDevResults.appendChild(line);
     }
   };
-  const tryRun = (label: string, fn: () => void): boolean => {
-    try { fn(); return true; } catch (err) { logEvent(`Self-test: ${label} error: ${err instanceof Error ? err.message : err}`); return false; }
-  };
-  const creditsBefore = document.getElementById('ui-credits')?.textContent ?? '';
-  const plotsBefore = (window as any).__plotCount;
 
-  add('Fill planet', tryRun('fill', () => (window as any).__fillTrees?.()) && Number((window as any).__plotCount) >= Number(plotsBefore || 0));
-  add('Clear planet', tryRun('clear', () => (window as any).__clearTrees?.()));
-  add('Credits', (() => { const ok = tryRun('credits', () => (window as any).__addCredits?.(100)); const after = document.getElementById('ui-credits')?.textContent; return ok && after !== creditsBefore; })());
-  add('Speed', tryRun('speed', () => { (window as any).__setSpeed?.(5); (window as any).__setSpeed?.(1); }));
-  add('Grid', tryRun('grid', () => { (window as any).__toggleGrid?.(); (window as any).__toggleGrid?.(); }));
-  add('Overall', results.every((r) => r.endsWith(': PASS')));
+  void (async () => {
+    try {
+      (window as any).__setSpeed?.(1);
+      (window as any).__resetGame?.(true);
+      await wait(30);
+      let s = summary();
+      add(`Reset: ${s.planted} trees, ${s.workers} workers`, s.planted === 0 && s.workers === 0);
 
-  showToast(`Self-test: ${pass}/${results.length} PASS`);
-  logEvent(`Self-test result: ${pass}/${results.length}`);
+      (window as any).__fillTrees?.();
+      await wait(30);
+      s = summary();
+      add(`Fill: state ${s.grown} grown, ${s.visible} visible`, s.grown === 1500 && s.visible === 1500);
+
+      (window as any).__clearTrees?.();
+      await wait(30);
+      s = summary();
+      add(`Clear: ${s.visible} visible, ${s.empty} empty`, s.visible === 0);
+
+      (window as any).__setSpeed?.(20);
+      (window as any).__spawnWorker?.('planter');
+      await wait(10000);
+      s = summary();
+      add(`Plant (10 s at x20): ${s.workers} worker, ${s.planted} planted`, s.workers === 1 && s.planted >= 1);
+
+      const wood = (window as any).__runWoodSelfTest?.();
+      add(`Wood chain (5 min): ${wood?.harvested ?? 0} chopped, ${wood?.logs ?? 0} piles waiting`,
+        !!wood && wood.harvested > 0);
+
+      (window as any).__setSpeed?.(1);
+      (window as any).__resetGame?.(true);
+      await wait(30);
+      s = summary();
+      add(`Reset again: ${s.planted} trees, ${s.workers} workers, credits ${s.credits}`,
+        s.planted === 0 && s.workers === 0 && s.credits === '100');
+    } catch (err) {
+      add(`Error: ${err instanceof Error ? err.message : String(err)}`, false);
+    } finally {
+      (window as any).__setSpeed?.(1);
+      selfTestRunning = false;
+    }
+
+    const passCount = results.filter((r) => r.ok).length;
+    const allPass = results.length > 0 && passCount === results.length;
+    showToast(`Self-test: ${allPass ? 'PASS' : 'FAIL'} ${passCount}/${results.length}`);
+    logEvent(`Self-test result: ${allPass ? 'PASS' : 'FAIL'} ${passCount}/${results.length}`);
+  })();
 }
 
 // ============================================================
@@ -870,7 +1026,7 @@ export function applyUrlParams(): void {
 
   if (reset === '1') {
     logEvent('URL: reset save');
-    (window as any).__resetGame?.();
+    (window as any).__resetGame?.(true);
     return;
   }
 
@@ -901,3 +1057,4 @@ export {
   updateDevStats,
   showToast,
 };
+

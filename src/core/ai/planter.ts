@@ -7,6 +7,7 @@ import {
   WORKER_MODEL,
   WORKER_SCALE,
 } from '../config/worker';
+import { plantSpeedMult } from '../config/upgrades';
 import type { GameState, Plot, Vec3, Worker } from '../state';
 
 // Backwards-compatible named exports.
@@ -184,11 +185,12 @@ export function updatePlanter(w: Worker, plots: Plot[], gameState: GameState, dt
         return;
       }
 
+      const plantMult = plantSpeedMult(gameState.upgrades.plantSpeed);
       w.plantTimer = Math.max(0, (w.plantTimer ?? WORKER_PLANT_SECONDS) - dt);
       w.stateTimer = w.plantTimer;
       if (w.plantTimer <= 0) {
         plot.state = 'sapling';
-        plot.timer = GROW_STAGE_SECONDS[0];
+        plot.timer = GROW_STAGE_SECONDS[0] * plantMult;
         plot.reservedBy = undefined;
         plot.popTimer = GROW_POP_SECONDS;
         gameState.stats.treesPlanted += 1;

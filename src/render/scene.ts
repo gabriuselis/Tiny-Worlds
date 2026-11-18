@@ -24,18 +24,18 @@ export function createScene(canvas: HTMLCanvasElement): SceneAPI {
   const camera = new THREE.PerspectiveCamera(45, canvas.clientWidth / canvas.clientHeight, 0.05, 2000);
   camera.position.set(0, 0, 10);
 
-  // Hemisphere light: sky white / ground green
-  const hemi = new THREE.HemisphereLight(0xffffff, 0x7fbf78, 0.6);
+  // Hemisphere light: sky white / ground green (kept low so crowns stay green at the limb)
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x7fbf78, 0.45);
   scene.add(hemi);
 
   // Directional light from upper left
-  const dir = new THREE.DirectionalLight(0xfff6e6, 1.2);
+  const dir = new THREE.DirectionalLight(0xfff6e6, 1.0);
   dir.position.set(-3, 3, 4);
   dir.castShadow = false;
   scene.add(dir);
 
   // Ambient fill
-  const ambient = new THREE.AmbientLight(0xffffff, 0.30);
+  const ambient = new THREE.AmbientLight(0xffffff, 0.22);
   scene.add(ambient);
 
   scene.environment = null;

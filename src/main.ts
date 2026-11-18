@@ -1,19 +1,22 @@
-import * as THREE from 'three';
+﻿import * as THREE from 'three';
 import { initialState } from './core/state';
 import { tick } from './core/sim';
 import { load, save, clearSave } from './core/save';
-import { upgradeCost } from './core/config/upgrades';
-import { WORLD_CONFIG, PLOT_COUNT, PLANET_RADIUS, GROW_STAGE_SECONDS, GROW_POP_SECONDS } from './core/config/world';
+import { upgradeCost, plantSpeedMult, chopSpeedMult, woodValueMult, UPGRADES } from './core/config/upgrades';
+import { WORLD_CONFIG, PLOT_COUNT, PLANET_RADIUS, GROW_STAGE_SECONDS, GROW_POP_SECONDS, LOG_LOGS_PER_PILE, LOG_BOTTOM_Y, LOG_TOP_Y, LOG_RADIUS, LOG_YAW_JITTER, LOG_PILE_CAPACITY } from './core/config/world';
 import { WORKER_SCALE, WORKER_APPEAR_SECONDS } from './core/config/worker';
 import { hireWorker } from './core/workers';
 import { buildGrid } from './core/grid';
-import { add, gte, sub } from './core/money';
+import { add, gte, format } from './core/money';
+import { seedEmptyPlots, fillPlanet, clearPlanet, resetGame, countPlotStates, sweepReservations, growAllTrees, spawnLogPiles, logsWaiting, buyUpgrade } from './core/game';
+import Decimal from 'break_infinity.js';
 import type { GameState, Role, UpgradeId, Plot } from './core/state';
 
 import { createScene, SceneAPI } from './render/scene';
-import { createPlanetMesh, createTreeVariantGeometry, createLogPileGeometry, createContactShadowGeometry, treeMaterials, CROWN_COLORS, CROWN_COLOR_COUNT } from './render/planet';
+import { createPlanetMesh, createTreeVariantGeometry, createLogGeometry, createContactShadowGeometry, treeMaterials, CROWN_COLORS, CROWN_COLOR_COUNT } from './render/planet';
 import { createWorkerModel, animateWorker, placeWorkerModel, tangentTowards, disposeWorkerModel, WorkerModel } from './render/worker';
-import { EffectManager } from './render/effects';
+import { ParticleSystem } from './render/particles';
+import { FloatingTextPool } from './render/floaters';
 import { setupGestures } from './render/gestures';
 import { getPlanetArea } from './render/viewport';
 import { UI, applyUrlParams, openDevDialog as openDevMenu, updateDevStats, logEvent, startMutationObserver, startDiagnosticEvents, uiFrozen, showToast } from './ui/ui';
@@ -61,7 +64,6 @@ let sceneAPI: SceneAPI | undefined = undefined;
 try {
   sceneAPI = createScene(canvas);
 } catch (err) { showError('createScene failed', err); }
-const effectMgr = sceneAPI ? new EffectManager(sceneAPI.scene) : null;
 
 // ===== Default camera distance (try/catch: broken config must not stop the planet) =====
 let defaultDist = 10;
@@ -119,6 +121,16 @@ const planetGroup = new THREE.Group();
 try {
   sceneAPI?.scene.add(planetGroup);
 } catch (err) { showError('planet group scene add failed', err); }
+
+// Planet-local pooled debris + floating "+1" labels.
+let particles: ParticleSystem | null = null;
+let floaters: FloatingTextPool | null = null;
+try {
+  if (sceneAPI) {
+    particles = new ParticleSystem(planetGroup);
+    floaters = new FloatingTextPool(sceneAPI.camera, planetGroup);
+  }
+} catch (err) { showError('particle system init failed', err); }
 
 let planetMesh: THREE.Mesh;
 try {
@@ -248,8 +260,9 @@ try {
   planetGroup?.add(ufo);
 } catch (err) { showError('trade post/UFO failed', err); }
 
-// ===== Tree InstancedMeshes: trunks, crowns (4 per color), log piles, shadows =====
+// ===== Tree InstancedMeshes: merged tree variants, log piles, shadows, falling trees =====
 let variantPools: THREE.InstancedMesh[] = [];
+let treeGeometries: THREE.BufferGeometry[] = [];
 let logPool: THREE.InstancedMesh;
 let shadowPool: THREE.InstancedMesh;
 let treeMatrix: THREE.Matrix4;
@@ -260,31 +273,60 @@ let testTreeTimer: number | null = null;
 let plotDotsMesh: THREE.InstancedMesh | null = null;
 let plotDotsVisible = false;
 
+// Falling trees: one pool per crown color, capacity WORLD_CONFIG.maxFallingTrees.
+let fallingPools: THREE.InstancedMesh[] = [];
+const fallingPrevCounts = [0, 0, 0, 0];
+
+const HIDDEN = new THREE.Matrix4().compose(
+  new THREE.Vector3(0, -999, 0),
+  new THREE.Quaternion(0, 0, 0, 1),
+  new THREE.Vector3(0.001, 0.001, 0.001),
+);
+
+function hideInstance(pool: THREE.InstancedMesh, index: number): void {
+  if (index >= 0 && index < pool.count) pool.setMatrixAt(index, HIDDEN);
+}
+
 function setupTreePools(): void {
   const { shadow } = treeMaterials();
-  const logMat = new THREE.MeshStandardMaterial({ color: 0x5d4037, roughness: 0.9, metalness: 0 });
+  const treeMatOpts = { vertexColors: true, roughness: 0.92, metalness: 0, emissive: 0x000000 };
 
   // Remove any previously created pools so rebuilds don't stack duplicates
   if (variantPools) {
     for (const vp of variantPools) if (vp) planetGroup.remove(vp);
   }
+  if (fallingPools) {
+    for (const fp of fallingPools) if (fp) planetGroup.remove(fp);
+  }
   if (logPool) planetGroup.remove(logPool);
   if (shadowPool) planetGroup.remove(shadowPool);
 
   variantPools = [];
+  fallingPools = [];
+  treeGeometries = [];
   for (let c = 0; c < CROWN_COLOR_COUNT; c++) {
     const geo = createTreeVariantGeometry(CROWN_COLORS[c]);
-    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0 });
+    treeGeometries.push(geo);
+    const mat = new THREE.MeshStandardMaterial(treeMatOpts);
     const vp = new THREE.InstancedMesh(geo, mat, PLOT_COUNT);
     vp.name = `tree-variant-pool-${c}`;
     vp.renderOrder = 3;
     vp.frustumCulled = false;
     planetGroup.add(vp);
     variantPools.push(vp);
+
+    const fmat = new THREE.MeshStandardMaterial(treeMatOpts);
+    const fp = new THREE.InstancedMesh(geo, fmat, WORLD_CONFIG.maxFallingTrees);
+    fp.name = `tree-falling-pool-${c}`;
+    fp.renderOrder = 3;
+    fp.frustumCulled = false;
+    planetGroup.add(fp);
+    fallingPools.push(fp);
   }
-  const logGeo = createLogPileGeometry();
+  const logGeo = createLogGeometry();
+  const logMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0, emissive: 0x000000 });
   const shadowGeo = createContactShadowGeometry();
-  logPool = new THREE.InstancedMesh(logGeo, logMat, PLOT_COUNT);
+  logPool = new THREE.InstancedMesh(logGeo, logMat, LOG_PILE_CAPACITY);
   shadowPool = new THREE.InstancedMesh(shadowGeo, shadow, PLOT_COUNT);
   logPool.name = 'tree-log-pool';
   shadowPool.name = 'tree-shadow-pool';
@@ -301,14 +343,15 @@ function setupTreePools(): void {
   swayFrame = 0;
 
   // Initialize all instances hidden
-  const hideMatrix = new THREE.Matrix4();
-  const hideQ = new THREE.Quaternion(0, 0, 0, 1);
-  const hideS = new THREE.Vector3(0.001, 0.001, 0.001);
   for (let i = 0; i < PLOT_COUNT; i++) {
-    hideMatrix.compose(new THREE.Vector3(0, -999, 0), hideQ, hideS);
-    for (const vp of variantPools) vp.setMatrixAt(i, hideMatrix);
-    logPool.setMatrixAt(i, hideMatrix);
-    shadowPool.setMatrixAt(i, hideMatrix);
+    for (const vp of variantPools) vp.setMatrixAt(i, HIDDEN);
+    shadowPool.setMatrixAt(i, HIDDEN);
+    dirtyTreeSet.add(i);
+  }
+  for (let i = 0; i < LOG_PILE_CAPACITY; i++) logPool.setMatrixAt(i, HIDDEN);
+  for (const fp of fallingPools) {
+    for (let i = 0; i < fp.count; i++) fp.setMatrixAt(i, HIDDEN);
+    fp.instanceMatrix.needsUpdate = true;
   }
   for (const vp of variantPools) vp.instanceMatrix.needsUpdate = true;
   logPool.instanceMatrix.needsUpdate = true;
@@ -319,10 +362,10 @@ try {
   setupTreePools();
 } catch (err) { showError('setupTreePools failed', err); }
 
-// ===== State =====
-// Handle ?reset=1 to clear old saves (for testing save compatibility)
-let state: GameState;
-let verdant: any;
+// ===== State: the ONE shared game object (created once, never replaced) =====
+// Dev actions and Reset mutate this object in place, so the simulation, the
+// planter AI, the renderer and the UI can never drift onto different copies.
+let game: GameState;
 try {
   const urlParams = new URLSearchParams(window.location.search);
   if (urlParams.get('reset') === '1') {
@@ -330,22 +373,31 @@ try {
     urlParams.delete('reset');
     window.history.replaceState({}, '', window.location.pathname);
   }
-  state = load() ?? initialState();
-  state.lastSaved = Date.now();
-  verdant = state.planets.verdant;
+  game = load() ?? initialState();
+  game.lastSaved = Date.now();
+} catch (err) {
+  showError('state init failed', err);
+  game = initialState();
+}
+const state: GameState = game;
+const verdant = state.planets.verdant;
 
-  // EMPTY START: no pre-planted trees, no workers. All 1500 plots exist in the grid
-  // but none are planted until Fill/hire. usablePlotCount drives what the renderer draws.
-  verdant.plots = [];
-  verdant.workers = [];
-  verdant.usablePlotCount = 0;
-} catch (err) { showError('state init failed', err); }
+// The grid is the only source of plot positions. Populate the shared state with
+// all 1500 plots as 'empty': the planet renders bare, and planters HAVE targets.
+try {
+  verdant.workers.length = 0; // empty start: no workers restored from a save
+  const n = seedEmptyPlots(state, grid.plots);
+  logEvent(`state: ${n} plots seeded empty`);
+} catch (err) { showError('seed plots failed', err); }
 
 let lastTime = performance.now();
 let accumulator = 0;
 
 // ===== Worker visual models (one per worker in state, object pool keyed by worker id) =====
 const workerVisuals = new Map<number, WorkerModel>();
+const chopEmitCooldown = new Map<number, number>();
+const prevWorkerState = new Map<number, string>();
+let lastWorkerCount = -1;
 let testWorkerModel: WorkerModel | null = null;
 
 // Random surface direction on the camera-facing side, away from the trade post.
@@ -404,35 +456,60 @@ try {
   ui.setHireHandler('lumberjack', () => addWorker('lumberjack'));
   ui.setHireHandler('carrier', () => addWorker('carrier'));
 
-  ui.setUpgradeHandler((id: UpgradeId) => {
+ui.setUpgradeHandler((id: UpgradeId) => {
     try {
-      const level = state.upgrades[id];
-      const cost = upgradeCost(id, level);
-      if (!gte(state.currencies.credits, cost)) return;
-      state.currencies.credits = sub(state.currencies.credits, cost);
-      state.upgrades[id] = level + 1;
-      // Unlock more plots
-      const newUsable = getUsablePlotCount();
-      while (verdant?.plots.length < newUsable && verdant?.plots.length < grid?.unlockedOrder.length) {
-        const idx = verdant.plots.length;
-        const pid = grid?.unlockedOrder[idx];
-        if (!pid) break;
-        const plot = grid?.plotById.get(pid);
-        if (!plot) break;
-        verdant.plots.push({
-          id: pid,
-          dir: { ...plot.dir },
-          state: 'empty',
-          timer: 0,
-          reservedBy: undefined,
-          woodLeft: 0,
-        });
-        verdant.usablePlotCount = idx + 1;
-        dirtyTreeSet?.add(pid);
+      const ok = buyUpgrade(state, id);
+      if (!ok) {
+        const level = state.upgrades[id];
+        const cost = upgradeCost(id, level);
+        if (!gte(state.currencies.credits, cost)) {
+          showToast(`Not enough credits for ${id} (need ${format(cost)})`);
+        } else {
+          showToast(`${id} is already at max level`);
+        }
+        return;
       }
+      // "+1 level" floating text + small bump on the card button.
+      const btn = document.getElementById(`ui-btn-${id}`);
+      if (btn) {
+        btn.classList.remove('pulse');
+        void (btn as HTMLElement).offsetWidth;
+        btn.classList.add('pulse');
+      }
+      floaters?.spawn(new THREE.Vector3(0, 1, 0), `+1 ${id}`);
+      ui.bumpWood();
       uiNeedsUpdate = true;
     } catch (err) { showError(`setUpgradeHandler: ${err instanceof Error ? err.message : err}`); }
   });
+
+  // Quick upgrade (green star): buy the cheapest affordable item among
+  // hire planter, hire lumberjack, hire carrier and the three real upgrades.
+  const quickBuy = document.getElementById('ui-quick-buy');
+  if (quickBuy) {
+    quickBuy.addEventListener('click', (e) => {
+      e.stopPropagation();
+      try {
+        const candidates: { id: UpgradeId; cost: Decimal }[] = [];
+        for (const id of ['planter', 'lumberjack', 'carrier', 'plantSpeed', 'chopSpeed', 'woodValue'] as UpgradeId[]) {
+          const cost = upgradeCost(id, state.upgrades[id]);
+          if (gte(state.currencies.credits, cost)) candidates.push({ id, cost });
+        }
+        if (candidates.length === 0) {
+          showToast('Nothing affordable yet');
+          return;
+        }
+        candidates.sort((a, b) => a.cost.toNumber() - b.cost.toNumber());
+        const target = candidates[0].id;
+        const role = target === 'planter' || target === 'lumberjack' || target === 'carrier';
+        if (role) {
+          addWorker(target as Role);
+        } else {
+          buyUpgrade(state, target);
+        }
+        uiNeedsUpdate = true;
+      } catch (err) { showError('quick buy failed', err); }
+    });
+  }
 
   ui.setDevHandlers({
     onToggleSpeed: () => { /* handled by UI internally */ },
@@ -498,12 +575,12 @@ try {
     const dist = cam2.position.length();
     const fovRad = (cam2.fov * Math.PI) / 180;
     const fill = (2 * Math.asin(Math.min(1, planetRadius / dist)) / fovRad) * 100;
-    diagEl.textContent = `ZOOM: dist=${dist.toFixed(2)} fov=${cam2.fov}° R=${planetRadius} scale=${planetGroup.scale.x.toFixed(2)} fill=${fill.toFixed(0)}%`;
+    diagEl.textContent = `ZOOM: dist=${dist.toFixed(2)} fov=${cam2.fov}Â° R=${planetRadius} scale=${planetGroup.scale.x.toFixed(2)} fill=${fill.toFixed(0)}%`;
     logEvent(`ZOOM DIAG: dist=${dist.toFixed(2)} fov=${cam2.fov} planetRadius=${planetRadius} scale=1 fill=${fill.toFixed(0)}%`);
   }
 } catch (err) { showError('zoom diag failed', err); }
 
-// Reset save button (trash icon) — opens dev menu only; never reloads.
+// Reset save button (trash icon) â€” opens dev menu only; never reloads.
 // Reset game lives inside the dev menu with double-tap confirmation.
 const btnResetSave = document.getElementById('ui-reset-save') as HTMLButtonElement;
 if (btnResetSave) {
@@ -514,20 +591,43 @@ if (btnResetSave) {
   });
 }
 
-// ===== Worker visuals: sync one model per worker from state (object pool) =====
-function updateWorkerVisuals(dt: number): void {
-  const verdant = state.planets.verdant;
+// ===== Worker visuals: sync one model per worker from the shared state =====
+// Dev actions call this directly; the frame loop calls it too, so the models
+// always match the same worker array the simulation uses.
+function syncWorkers(): void {
+  const workers = state.planets.verdant.workers;
   const live = new Set<number>();
-
-  for (const w of verdant.workers) {
+  for (const w of workers) {
     live.add(w.id);
-    let vm = workerVisuals.get(w.id);
-    if (!vm) {
-      vm = createWorkerModel(w.role);
+    if (!workerVisuals.has(w.id)) {
+      const vm = createWorkerModel(w.role);
       vm.puffTimer = WORKER_APPEAR_SECONDS;
       workerVisuals.set(w.id, vm);
       planetGroup.add(vm.group);
     }
+  }
+  for (const [id, vm] of workerVisuals) {
+    if (!live.has(id)) {
+      disposeWorkerModel(vm);
+      workerVisuals.delete(id);
+      chopEmitCooldown.delete(id);
+      prevWorkerState.delete(id);
+    }
+  }
+  // Reservations can only be orphaned when a worker disappears.
+  if (workers.length !== lastWorkerCount) {
+    lastWorkerCount = workers.length;
+    sweepReservations(state);
+  }
+}
+
+function updateWorkerVisuals(dt: number): void {
+  syncWorkers();
+  const verdant = state.planets.verdant;
+
+  for (const w of verdant.workers) {
+    const vm = workerVisuals.get(w.id);
+    if (!vm) continue;
 
     const dir = new THREE.Vector3(w.pos.x, w.pos.y, w.pos.z);
     if (dir.lengthSq() < 1e-10) dir.set(0, 0, 1);
@@ -544,7 +644,28 @@ function updateWorkerVisuals(dt: number): void {
     }
 
     placeWorkerModel(vm, dir, vm.forward, surfaceRadius + 0.001);
-    animateWorker(vm, w.state, dt);
+    animateWorker(vm, w.state, dt, w.carryingLogs ?? 0);
+
+    // Particle bursts driven by AI state transitions.
+    const before = prevWorkerState.get(w.id);
+    const targetPlot = w.target !== undefined ? verdant.plots.find((p) => p.id === w.target) : undefined;
+    if (particles && targetPlot) {
+      if (w.state === 'chopping') {
+        let cd = (chopEmitCooldown.get(w.id) ?? 0) - dt;
+        if (cd <= 0) {
+          particles.emit('chip', targetPlot.dir, 0.15, 6);
+          particles.emit('leaf', targetPlot.dir, 0.22, 2);
+          cd = 0.85;
+        }
+        chopEmitCooldown.set(w.id, cd);
+      } else {
+        chopEmitCooldown.set(w.id, 0);
+      }
+      if (w.state === 'planting' && before !== 'planting') {
+        particles.emit('bark', targetPlot.dir, 0.04, 6);
+      }
+    }
+    prevWorkerState.set(w.id, w.state);
 
     // Spawn scale-in: 0.2 -> 1.0 over WORKER_APPEAR_SECONDS with a small overshoot.
     let spawnScale = 1;
@@ -559,14 +680,6 @@ function updateWorkerVisuals(dt: number): void {
       }
     }
     vm.group.scale.setScalar(WORKER_SCALE * spawnScale);
-  }
-
-  // Remove models whose workers no longer exist (reset / clear).
-  for (const [id, vm] of workerVisuals) {
-    if (!live.has(id)) {
-      disposeWorkerModel(vm);
-      workerVisuals.delete(id);
-    }
   }
 }
 
@@ -593,7 +706,6 @@ function clamp01(v: number): number {
 function plotScale(plot: Plot): number {
   const pop = plot.popTimer ? 1 + 0.12 * clamp01(plot.popTimer / GROW_POP_SECONDS) : 1;
   if (plot.state === 'empty') return 0.0001;
-  if (plot.state === 'stump') return 0.15;
   if (plot.state === 'grown') return pop;
   if (plot.state === 'sapling') {
     const t = clamp01(1 - Math.max(0, plot.timer) / GROW_STAGE_SECONDS[0]);
@@ -603,7 +715,7 @@ function plotScale(plot: Plot): number {
     const t = clamp01(1 - Math.max(0, plot.timer) / GROW_STAGE_SECONDS[1]);
     return (0.65 + (1.0 - 0.65) * t) * pop;
   }
-  return 0.35;
+  return 0.0001;
 }
 
 // Shared transform for a plot's tree: trunk, crown and shadow all use the SAME matrix.
@@ -614,7 +726,7 @@ function writeTreeMatrices(plot: Plot): void {
   const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z) || 1;
   dir.divideScalar(len);
 
-  const pos = new THREE.Vector3(dir.x * (surfaceRadius - 0.01), dir.y * (surfaceRadius - 0.01), dir.z * (surfaceRadius - 0.01));
+  const basePos = new THREE.Vector3(dir.x * (surfaceRadius + 0.002), dir.y * (surfaceRadius + 0.002), dir.z * (surfaceRadius + 0.002));
 
   const upAxis = new THREE.Vector3(0, 1, 0);
   const q = new THREE.Quaternion().setFromUnitVectors(upAxis, dir);
@@ -623,30 +735,52 @@ function writeTreeMatrices(plot: Plot): void {
   }
   q.premultiply(new THREE.Quaternion().setFromAxisAngle(dir, hashAngle(plot.id)));
 
-  const s = Math.max(0.0001, plotScale(plot));
-  treeMatrix.compose(pos, q, treeScale.set(s, s, s));
-  const m = treeMatrix.elements;
-  let bad = false;
-  for (let i = 0; i < 16; i++) {
-    if (!isFinite(m[i])) { bad = true; break; }
-  }
-  if (bad) {
-    logEvent(`Tree matrix NaN skipped: plot ${plot.id}`);
-    return;
-  }
-
-  // Same matrix for trunk+crown (merged variant pool) and shadow -> trunk attaches to crown, no gap
   const vp = variantPools[plot.id % CROWN_COLOR_COUNT];
-  vp.setMatrixAt(plot.id, treeMatrix);
-  shadowPool.setMatrixAt(plot.id, treeMatrix);
+  const hasTree = plot.state === 'sapling' || plot.state === 'medium' || plot.state === 'grown';
 
-  // Stump log (chopped tree only): short upright cylinder on the ground.
-  // Grown trees never show a stump/log-pile mesh.
-  if (plot.state === 'stump') {
-    logPool.setMatrixAt(plot.id, treeMatrix);
+  if (hasTree) {
+    const s = Math.max(0.0001, plotScale(plot));
+    treeMatrix.compose(basePos, q, treeScale.set(s, s, s));
+    const m = treeMatrix.elements;
+    let bad = false;
+    for (let i = 0; i < 16; i++) {
+      if (!isFinite(m[i])) { bad = true; break; }
+    }
+    if (bad) {
+      logEvent(`Tree matrix NaN skipped: plot ${plot.id}`);
+      hideInstance(vp, plot.id);
+      hideInstance(shadowPool, plot.id);
+    } else {
+      // Same matrix for trunk+crown (merged variant pool) and shadow -> trunk attaches to crown, no gap
+      vp.setMatrixAt(plot.id, treeMatrix);
+      shadowPool.setMatrixAt(plot.id, treeMatrix);
+    }
   } else {
-    treeMatrix.compose(new THREE.Vector3(0, -999, 0), q, treeScale.set(0.001, 0.001, 0.001));
-    logPool.setMatrixAt(plot.id, treeMatrix);
+    // 'empty', 'logs' and 'falling' plots show no standing tree.
+    hideInstance(vp, plot.id);
+    hideInstance(shadowPool, plot.id);
+  }
+
+  // Log pile: 3 instances per plot, only visible while the plot holds logs.
+  for (let k = 0; k < LOG_LOGS_PER_PILE; k++) hideInstance(logPool, plot.id * LOG_LOGS_PER_PILE + k);
+  if (plot.state === 'logs') writeLogPile(plot, basePos, q);
+}
+
+// Lay 1-3 logs in a small pyramid on the plot, axis along the local tangent X.
+function writeLogPile(plot: Plot, basePos: THREE.Vector3, baseQ: THREE.Quaternion): void {
+  const count = Math.min(LOG_LOGS_PER_PILE, Math.max(0, plot.woodLeft ?? 0));
+  if (count === 0) return;
+  const yawJitter = (hashAngle(plot.id * 7 + 1) / (Math.PI * 2) - 0.5) * 2 * LOG_YAW_JITTER;
+  const yawQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawJitter);
+  const one = new THREE.Vector3(1, 1, 1);
+  const local = new THREE.Vector3();
+  const world = new THREE.Vector3();
+  for (let k = 0; k < count; k++) {
+    if (k === 2) local.set(0, LOG_TOP_Y, 0);
+    else local.set(k === 0 ? -(LOG_RADIUS + 0.002) : LOG_RADIUS + 0.002, LOG_BOTTOM_Y, 0);
+    world.copy(local).applyQuaternion(yawQ).applyQuaternion(baseQ).add(basePos);
+    treeMatrix.compose(world, baseQ, one);
+    logPool.setMatrixAt(plot.id * LOG_LOGS_PER_PILE + k, treeMatrix);
   }
 }
 
@@ -662,6 +796,10 @@ function syncTrees(): void {
 }
 
 // ===== Tree instance updates (dirty list only, per-frame) =====
+const prevPlotStates: string[] = [];
+const prevWoodLeft: number[] = [];
+let fallingTotal = 0;
+
 function updateTreeInstances(): void {
   const verdant = state.planets.verdant;
 
@@ -683,9 +821,33 @@ function updateTreeInstances(): void {
     dirtyTreeSet.add(arrayIdx);
   }
 
-  // Growing trees change scale every tick, so re-write them each frame.
+  // Mark plots whose stage / pile size changed, plus everything currently animating.
+  fallingTotal = 0;
   for (let i = 0; i < verdant.plots.length; i++) {
     const p = verdant.plots[i];
+    if (p.state === 'falling') fallingTotal += 1;
+    const wood = p.woodLeft ?? 0;
+    if (prevPlotStates[i] !== p.state || prevWoodLeft[i] !== wood) {
+      // Wood-chip / leaf bursts the moment a tree starts falling, landing dust on impact.
+      if (particles) {
+        if (p.state === 'falling' && prevPlotStates[i] !== 'falling') {
+          particles.emit('leaf', p.dir, 0.36, 14);
+          particles.emit('chip', p.dir, 0.18, 8);
+        } else if (p.state === 'logs' && prevPlotStates[i] === 'falling') {
+          particles.emit('dust', p.dir, 0.02, 8);
+        }
+      }
+      // Every log lifted off a pile: floating +1 above the plot and a Wood bump.
+      if (prevPlotStates[i] === 'logs' && wood < prevWoodLeft[i]) {
+        const lifted = prevWoodLeft[i] - wood;
+        const pos = new THREE.Vector3(p.dir.x, p.dir.y, p.dir.z).multiplyScalar(surfaceRadius + 0.45);
+        for (let k = 0; k < lifted; k++) floaters?.spawn(pos);
+        if (lifted > 0) ui.bumpWood();
+      }
+      prevPlotStates[i] = p.state;
+      prevWoodLeft[i] = wood;
+      dirtyTreeSet.add(i);
+    }
     if (p.state === 'sapling' || p.state === 'medium' || (p.popTimer ?? 0) > 0) {
       dirtyTreeSet.add(i);
     }
@@ -707,6 +869,67 @@ function updateTreeInstances(): void {
   for (const vp of variantPools) vp.instanceMatrix.needsUpdate = true;
   logPool.instanceMatrix.needsUpdate = true;
   shadowPool.instanceMatrix.needsUpdate = true;
+}
+
+// ===== Falling trees: animate the whole merged tree tipping over, then shrinking =====
+function updateFallingTrees(): void {
+  if (fallingTotal === 0) {
+    let stale = false;
+    for (let c = 0; c < fallingPools.length; c++) if (fallingPrevCounts[c] > 0) stale = true;
+    if (stale) {
+      for (let c = 0; c < fallingPools.length; c++) {
+        for (let i = 0; i < fallingPrevCounts[c]; i++) hideInstance(fallingPools[c], i);
+        fallingPrevCounts[c] = 0;
+        fallingPools[c].instanceMatrix.needsUpdate = true;
+      }
+    }
+    return;
+  }
+  const counts = [0, 0, 0, 0];
+  const dir = new THREE.Vector3();
+  const pos = new THREE.Vector3();
+  const fallDir = new THREE.Vector3();
+  const axis = new THREE.Vector3();
+  const tilt = new THREE.Quaternion();
+  const yawQ = new THREE.Quaternion();
+  const upAxis = new THREE.Vector3(0, 1, 0);
+
+  for (const plot of state.planets.verdant.plots) {
+    if (plot.state !== 'falling') continue;
+    const c = plot.id % CROWN_COLOR_COUNT;
+    const pool = fallingPools[c];
+    const slot = counts[c];
+    if (slot >= pool.count) continue;
+
+    dir.set(plot.dir.x, plot.dir.y, plot.dir.z).normalize();
+    pos.copy(dir).multiplyScalar(surfaceRadius + 0.002);
+    const q = new THREE.Quaternion().setFromUnitVectors(upAxis, dir);
+    q.premultiply(yawQ.setFromAxisAngle(dir, hashAngle(plot.id)));
+
+    if (plot.fallDir) {
+      fallDir.set(plot.fallDir.x, plot.fallDir.y, plot.fallDir.z).normalize();
+      axis.crossVectors(dir, fallDir);
+      if (axis.lengthSq() > 1e-8) {
+        axis.normalize();
+        const t = clamp01(1 - Math.max(0, plot.timer) / WORLD_CONFIG.fallTime);
+        tilt.setFromAxisAngle(axis, (Math.PI / 2) * Math.pow(t, 1.7));
+        q.premultiply(tilt);
+      }
+    }
+
+    const shrinkT = clamp01((WORLD_CONFIG.fallShrinkTime - Math.max(0, plot.timer)) / WORLD_CONFIG.fallShrinkTime);
+    const s = 1 - shrinkT * 0.9;
+    treeMatrix.compose(pos, q, treeScale.set(s, s, s));
+    pool.setMatrixAt(slot, treeMatrix);
+    counts[c] = slot + 1;
+  }
+
+  for (let c = 0; c < fallingPools.length; c++) {
+    const pool = fallingPools[c];
+    for (let i = counts[c]; i < fallingPrevCounts[c]; i++) hideInstance(pool, i);
+    fallingPrevCounts[c] = counts[c];
+    pool.instanceMatrix.needsUpdate = true;
+  }
 }
 
 // ===== Count trees whose instance scale > 0.5 (read back from the matrices) =====
@@ -756,23 +979,19 @@ function testTree(): void {
   // Same matrix for trunk+crown (merged variant pool) and shadow -> trunk attaches to crown
   variantPools[0].setMatrixAt(0, treeMatrix);
   shadowPool.setMatrixAt(0, treeMatrix);
-  logPool.setMatrixAt(0, treeMatrix);
+  for (let k = 0; k < LOG_LOGS_PER_PILE; k++) hideInstance(logPool, k);
 
   // Hide all other instances temporarily
   const maxPlots = grid.plots.length;
-  const hideMatrix = new THREE.Matrix4();
-  const hideQ = new THREE.Quaternion(0, 0, 0, 1);
-  const hideS = new THREE.Vector3(0.001, 0.001, 0.001);
-    for (let i = 1; i < maxPlots; i++) {
-      hideMatrix.compose(new THREE.Vector3(0, -999, 0), hideQ, hideS);
-      for (const vp of variantPools) vp.setMatrixAt(i, hideMatrix);
-      shadowPool.setMatrixAt(i, hideMatrix);
-      logPool.setMatrixAt(i, hideMatrix);
-    }
+  for (let i = 1; i < maxPlots; i++) {
+    for (const vp of variantPools) hideInstance(vp, i);
+    hideInstance(shadowPool, i);
+    for (let k = 0; k < LOG_LOGS_PER_PILE; k++) hideInstance(logPool, i * LOG_LOGS_PER_PILE + k);
+  }
 
-    for (const vp of variantPools) vp.instanceMatrix.needsUpdate = true;
-    shadowPool.instanceMatrix.needsUpdate = true;
-    logPool.instanceMatrix.needsUpdate = true;
+  for (const vp of variantPools) vp.instanceMatrix.needsUpdate = true;
+  shadowPool.instanceMatrix.needsUpdate = true;
+  logPool.instanceMatrix.needsUpdate = true;
 
   // Restore after 5 seconds
   if (testTreeTimer) clearTimeout(testTreeTimer);
@@ -808,7 +1027,7 @@ function updateTreeSway(): void {
     const dot = dir.x * cd.x + dir.y * cd.y + dir.z * cd.z;
     if (dot < 0.7) continue; // only near camera
     const sway = Math.sin(time + plot.id * 0.5) * 0.03;
-  const pos = new THREE.Vector3(dir.x * (surfaceRadius - 0.01), dir.y * (surfaceRadius - 0.01), dir.z * (surfaceRadius - 0.01));
+  const pos = new THREE.Vector3(dir.x * (surfaceRadius + 0.002), dir.y * (surfaceRadius + 0.002), dir.z * (surfaceRadius + 0.002));
     const q = new THREE.Quaternion().setFromUnitVectors(upAxis, dir);
     if (!q || !isFinite(q.x) || !isFinite(q.y) || !isFinite(q.z) || !isFinite(q.w)) {
       q.set(0, 0, 0, 1);
@@ -839,12 +1058,13 @@ function loop(now: number) {
     if (!Number.isFinite(dt)) return;
 
     try {
-      accumulator += dt; // was missing: the simulation never stepped before this fix
       if (!isPaused) {
-        const speedMult = gameSpeedMult;
-        const stepDt = DT * speedMult;
+        // Speed multiplier scales how much sim time each real second feeds in,
+        // while the fixed sim step stays DT (0.1 s).
+        accumulator += dt * gameSpeedMult;
+        const stepDt = DT;
         const steps = Math.floor(accumulator / stepDt);
-        const stepped = Math.min(steps, 6);
+        const stepped = Math.min(steps, 30);
         for (let i = 0; i < stepped; i++) {
           tick(state, stepDt);
         }
@@ -858,6 +1078,7 @@ function loop(now: number) {
 
     try {
       updateTreeInstances();
+      updateFallingTrees();
     } catch (err) { console.error(`updateTrees: ${err instanceof Error ? err.message : err}`); }
 
     try {
@@ -875,7 +1096,8 @@ function loop(now: number) {
     } catch (err) { console.error(`ufo: ${err instanceof Error ? err.message : err}`); }
 
     try {
-      effectMgr?.update(DT);
+      particles?.update(dt);
+      floaters?.update(dt);
       sceneAPI?.render();
     } catch (err) { console.error(`render: ${err instanceof Error ? err.message : err}`); }
 
@@ -960,39 +1182,22 @@ if (btnDev) {
   });
 }
 
-// Fill planet: set ALL 1500 plots to grown, sync trees, toast real visible count.
+// Fill planet: every plot grown in the shared state -> sync -> read back from
+// the rendered instance matrices and from the state.
 (window as any).__fillTrees = () => {
   try {
-    const verdant2 = state.planets.verdant;
-    verdant2.plots = [];
-    for (const plot of grid.plots) {
-      verdant2.plots.push({
-        id: plot.id,
-        dir: { ...plot.dir },
-        state: 'grown',
-        timer: 0,
-        reservedBy: undefined,
-        woodLeft: 0,
-      });
-    }
-    verdant2.usablePlotCount = verdant2.plots.length;
-    // Workers keep standing but lose their target: every plot is grown now.
-    for (const w of verdant2.workers) {
-      w.state = 'idle';
-      w.target = undefined;
-      w.plantTimer = undefined;
-      w.stuckTimer = 0;
-      w.stateTimer = 0;
-    }
+    const n = fillPlanet(state, grid.plots);
     syncTrees();
+    syncWorkers();
+    const counts = countPlotStates(state);
     const visible = countVisibleTrees();
-    logEvent(`__fillTrees: ${verdant2.plots.length}/${grid.plots.length} grown, ${visible} visible`);
-    updateDevStats(verdant2.plots.length, debugFPS);
+    logEvent(`Fill: state ${counts.grown} grown, ${visible} trees visible`);
+    updateDevStats(n, debugFPS);
     uiNeedsUpdate = true;
-    showToast(`Fill: ${visible}/${verdant2.plots.length} trees visible`);
+    showToast(`Fill: state ${counts.grown} grown, ${visible} trees visible`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    showError('Fill planet failed', msg);
+    showError('Fill planet failed', err);
     showToast(`Fill failed: ${msg}`);
     logEvent(`__fillTrees FAILED: ${msg}`);
   }
@@ -1003,63 +1208,68 @@ if (btnDev) {
   testTree();
 };
 
-// Clear planet: set ALL plots to empty, sync trees, toast real visible count.
+// Clear planet: every plot empty again (full grid kept), workers kept + idle.
 (window as any).__clearTrees = () => {
   try {
-    const verdant2 = state.planets.verdant;
-    verdant2.plots = [];
-    verdant2.usablePlotCount = 0;
-    // Keep workers but release every reservation and stop them.
-    for (const w of verdant2.workers) {
-      w.state = 'idle';
-      w.target = undefined;
-      w.plantTimer = undefined;
-      w.stuckTimer = 0;
-      w.stateTimer = 0;
-    }
+    clearPlanet(state, grid.plots);
     syncTrees();
+    syncWorkers();
+    const counts = countPlotStates(state);
     const visible = countVisibleTrees();
-    logEvent(`__clearTrees: cleared all, ${visible} visible`);
-    updateDevStats(verdant2.plots.length, debugFPS);
+    const workers = state.planets.verdant.workers.length;
+    logEvent(`Clear: ${visible} trees visible, ${workers} workers kept, ${counts.empty} empty plots`);
+    updateDevStats(counts.total, debugFPS);
     uiNeedsUpdate = true;
-    showToast(`Clear: ${visible} trees visible`);
+    showToast(`Clear: ${visible} trees visible, ${workers} workers kept, ${counts.empty} empty plots`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    showError('Clear planet failed', msg);
+    showError('Clear planet failed', err);
     showToast(`Clear failed: ${msg}`);
     logEvent(`__clearTrees FAILED: ${msg}`);
   }
 };
 
-// Reset game (tap twice): new empty initial state, remove worker meshes, clear save, sync trees.
+// Reset game (tap twice within 3s, or force): mutate the SAME game object,
+// wipe save + worker meshes + particles, then re-sync everything.
 let resetConfirmTime = 0;
-(window as any).__resetGame = () => {
+(window as any).__resetGame = (force?: boolean) => {
   const now = Date.now();
-  if (now - resetConfirmTime < 3000) {
-    // Confirmed: in-place reset
+  const confirmed = force === true || now - resetConfirmTime < 3000;
+  if (confirmed) {
     try {
+      resetConfirmTime = 0;
       clearSave();
-      state = initialState();
-      state.lastSaved = Date.now();
-      verdant = state.planets.verdant;
-      // Remove all worker models and their GPU resources.
-      for (const vw of workerVisuals.values()) {
-        try { disposeWorkerModel(vw); } catch { /* ignore */ }
+      resetGame(state); // in place: no new object, no stale aliases
+      seedEmptyPlots(state, grid.plots); // full empty grid => planters have targets
+
+      for (const vm of workerVisuals.values()) {
+        try { disposeWorkerModel(vm); } catch { /* ignore */ }
       }
       workerVisuals.clear();
       if (testWorkerModel) {
         try { disposeWorkerModel(testWorkerModel); } catch { /* ignore */ }
         testWorkerModel = null;
       }
+      if (testWorkerTimer) { clearTimeout(testWorkerTimer); testWorkerTimer = null; }
+      if (testTreeTimer) { clearTimeout(testTreeTimer); testTreeTimer = null; }
+      try { particles?.clear(); floaters?.clear(); } catch { /* ignore */ }
+
       syncTrees();
+      syncWorkers();
+      const counts = countPlotStates(state);
+      const visible = countVisibleTrees();
+      const workers = state.planets.verdant.workers.length;
+      const credits = format(state.currencies.credits);
+
       uiNeedsUpdate = true;
       lastTime = performance.now();
       accumulator = 0;
-      showToast('Reset: empty planet');
-      logEvent('__resetGame: reset complete, empty planet');
+      showToast(`Reset: ${visible} trees, ${workers} workers, credits ${credits} (${counts.empty} empty plots)`);
+      logEvent(`__resetGame: reset complete, ${visible} trees, ${workers} workers, credits ${credits}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      showError('Reset failed', msg);
+      showError('Reset failed', err);
+      showToast(`Reset failed: ${msg}`);
       logEvent(`__resetGame FAILED: ${msg}`);
     }
     return;
@@ -1076,6 +1286,37 @@ let resetConfirmTime = 0;
   logEvent(`__addCredits: +${amt}`);
 };
 
+// Add Wood (visible counter and the amount queued for selling), dev only.
+(window as any).__addWood = (amt = 10) => {
+  try {
+    state.wood = add(state.wood, amt);
+    state.woodToSell = add(state.woodToSell, amt);
+    ui.bumpWood();
+    uiNeedsUpdate = true;
+    showToast(`+${amt} wood`);
+    logEvent(`__addWood: +${amt} (wood ${format(state.wood)})`);
+  } catch (err) { showError('Add wood failed', err); }
+};
+
+// Emit one of each particle kind at the plot nearest the camera centre (dev).
+(window as any).__emitTestParticles = () => {
+  try {
+    if (!particles || !sceneAPI) return;
+    const camDir = new THREE.Vector3(0, 0, -1).applyQuaternion(sceneAPI.camera.quaternion).normalize();
+    let best = state.planets.verdant.plots[0];
+    let bestDot = -Infinity;
+    for (const p of state.planets.verdant.plots) {
+      const dot = p.dir.x * camDir.x + p.dir.y * camDir.y + p.dir.z * camDir.z;
+      if (dot > bestDot) { bestDot = dot; best = p; }
+    }
+    if (!best) return;
+    particles.emit('chip', best.dir, 0.15, 10);
+    particles.emit('leaf', best.dir, 0.25, 8);
+    particles.emit('dust', best.dir, 0.02, 6);
+    logEvent(`__emitTestParticles: ${particles.aliveCount} alive`);
+  } catch (err) { showError('Emit test particles failed', err); }
+};
+
 // Spawn worker with sky-drop (dev)
 (window as any).__spawnWorker = (role: Role) => {
   try {
@@ -1084,6 +1325,110 @@ let resetConfirmTime = 0;
     logEvent(`__spawnWorker: ${role} (free)`);
   } catch (err) {
     logEvent(`__spawnWorker: ${err instanceof Error ? err.message : err}`);
+  }
+};
+
+// Grow every planted tree instantly (dev)
+(window as any).__growAllTrees = () => {
+  try {
+    const n = growAllTrees(state);
+    logEvent(`__growAllTrees: ${n} trees grown`);
+    showToast(`Grew ${n} trees`);
+    uiNeedsUpdate = true;
+    return n;
+  } catch (err) {
+    showError('Grow all failed', err);
+    return 0;
+  }
+};
+
+// Spawn 10 random 3-log piles so the lumberjack/carrier chain can be inspected (dev)
+(window as any).__spawnLogPiles = (count = 10) => {
+  try {
+    const n = spawnLogPiles(state, count);
+    syncTrees();
+    logEvent(`__spawnLogPiles: ${n} piles, ${logsWaiting(state)} logs waiting`);
+    showToast(`${n} log piles spawned`);
+    uiNeedsUpdate = true;
+    return n;
+  } catch (err) {
+    showError('Spawn log piles failed', err);
+    return 0;
+  }
+};
+
+// Dev: +1 to every upgrade level (skips max), costs nothing.
+(window as any).__upgradeAllPlus1 = () => {
+  try {
+    for (const id of ['plantSpeed', 'chopSpeed', 'woodValue', 'tapPower', 'maxTrees'] as const) {
+      const max = (UPGRADES[id] as any).maxLevel;
+      if (max !== undefined && state.upgrades[id] >= max) continue;
+      state.upgrades[id] += 1;
+    }
+    uiNeedsUpdate = true;
+    showToast('Upgrades +1 all');
+    logEvent('__upgradeAllPlus1');
+  } catch (err) { showError('upgradeAllPlus1 failed', err); }
+};
+
+// Dev: reset upgrade levels to 0.
+(window as any).__upgradeReset = () => {
+  try {
+    for (const id of Object.keys(state.upgrades) as UpgradeId[]) {
+      state.upgrades[id] = 0;
+    }
+    uiNeedsUpdate = true;
+    showToast('Upgrades reset');
+    logEvent('__upgradeReset');
+  } catch (err) { showError('upgradeReset failed', err); }
+};
+
+// Dev: current multipliers for the dev menu line.
+(window as any).__upgradeMultipliers = () => {
+  return {
+    plant: plantSpeedMult(state.upgrades.plantSpeed),
+    chop: chopSpeedMult(state.upgrades.chopSpeed),
+    value: woodValueMult(state.upgrades.woodValue),
+  };
+};
+
+// Headless 5-minute wood-chain self test: 5 planters, 2 lumberjacks, 2 carriers.
+(window as any).__runWoodSelfTest = () => {
+  try {
+    const sim = initialState();
+    seedEmptyPlots(sim, grid.plots);
+    const spawnDir = { x: 0, y: 0, z: 1 };
+    for (let i = 0; i < 5; i++) hireWorker(sim, 'planter', { free: true, spawnDir });
+    for (let i = 0; i < 2; i++) hireWorker(sim, 'lumberjack', { free: true, spawnDir });
+    for (let i = 0; i < 2; i++) hireWorker(sim, 'carrier', { free: true, spawnDir });
+
+    const steps = Math.round(300 / DT);
+    for (let i = 0; i < steps; i++) tick(sim, DT);
+
+    const counts = countPlotStates(sim);
+    const stuck = sim.planets.verdant.workers.filter((w) => (w.stuckTimer ?? 0) > 0).length;
+    const result = {
+      steps,
+      plots: counts.total,
+      empty: counts.empty,
+      sapling: counts.sapling,
+      medium: counts.medium,
+      grown: counts.grown,
+      falling: counts.falling,
+      logs: counts.logs,
+      wood: format(sim.wood),
+      woodToSell: format(sim.woodToSell),
+      credits: format(sim.currencies.credits),
+      harvested: sim.planets.verdant.treesHarvested,
+      logsWaiting: logsWaiting(sim),
+      stuck,
+    };
+    logEvent(`__runWoodSelfTest: ${JSON.stringify(result)}`);
+    showToast(`Wood test: ${result.harvested} chopped, ${result.logs} piles, wood ${result.wood}`);
+    return result;
+  } catch (err) {
+    showError('Wood self test failed', err);
+    return null;
   }
 };
 
@@ -1152,15 +1497,40 @@ let logBoxHidden = true;
   return `Plots: ${plots.length} | Y+:${yPos} Y-:${yNeg} X+:${xPos} X-:${xNeg} Z+:${zPos} Z-:${zNeg} equator:${equatorBand}${meshInfo}`;
 };
 
-// Workers debug: id, role, AI state, target plot id, remaining time in the state, position.
+// Workers debug: worker count, empty plots, id, role, AI state, chosen target plot id,
+// remaining time in the state and position.
 (window as any).__getWorkersDebug = (): string => {
   const verdant = state.planets.verdant;
-  let lines = `Workers: ${verdant.workers.length} | tick: ${frameCount}`;
+  const counts = countPlotStates(state);
+  let lines = `Workers: ${verdant.workers.length} | empty plots: ${counts.empty} | plots: ${counts.total} | tick: ${frameCount}`;
   for (const w of verdant.workers) {
     const left = w.stateTimer !== undefined ? ` left=${w.stateTimer.toFixed(1)}s` : '';
     lines += `\n  ${w.id} ${w.role} ${w.state} target=${w.target ?? '-'}${left} pos=(${w.pos.x.toFixed(2)},${w.pos.y.toFixed(2)},${w.pos.z.toFixed(2)})`;
   }
+  lines += `\nParticles alive: ${particles?.aliveCount ?? 0}`;
   return lines;
+};
+
+// Compact state summary used by the dev self-test.
+(window as any).__getStateSummary = () => {
+  const counts = countPlotStates(state);
+  return {
+    plots: counts.total,
+    empty: counts.empty,
+    sapling: counts.sapling,
+    medium: counts.medium,
+    grown: counts.grown,
+    falling: counts.falling,
+    logs: counts.logs,
+    planted: counts.planted,
+    harvested: state.planets.verdant.treesHarvested,
+    logsWaiting: logsWaiting(state),
+    wood: format(state.wood),
+    woodToSell: format(state.woodToSell),
+    visible: countVisibleTrees(),
+    workers: state.planets.verdant.workers.length,
+    credits: format(state.currencies.credits),
+  };
 };
 
 // Test worker: one model at 3x scale in front of the camera for 8 seconds, standing still.
@@ -1317,7 +1687,13 @@ function matSummary(m: THREE.Material): string {
     for (let i = 0; i < PLOT_COUNT; i++) {
       const p = grid.plots[i];
       const st = plotState.get(p.id) ?? 'empty';
-      color.set(st === 'empty' ? 0x888888 : st === 'sapling' ? 0xffeb3b : st === 'medium' ? 0xff9800 : 0x4caf50);
+      const dotColor = st === 'empty' ? 0x888888
+        : st === 'sapling' ? 0xffeb3b
+        : st === 'medium' ? 0xff9800
+        : st === 'falling' ? 0xff7043
+        : st === 'logs' ? 0x795548
+        : 0x4caf50;
+      color.set(dotColor);
       dummy.position.set(p.dir.x * PLANET_RADIUS * 1.003, p.dir.y * PLANET_RADIUS * 1.003, p.dir.z * PLANET_RADIUS * 1.003);
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
@@ -1345,5 +1721,12 @@ requestAnimationFrame(() => {
 });
 
 requestAnimationFrame(loop);
+
+
+
+
+
+
+
 
 

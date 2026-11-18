@@ -1,5 +1,25 @@
 import * as THREE from 'three';
-import { WORLD_CONFIG, TREE_TRUNK_HEIGHT, TREE_TRUNK_RADIUS_TOP, TREE_TRUNK_RADIUS_BOTTOM, TREE_TRUNK_COLOR, TREE_CROWN_RADIUS, TREE_CROWN_CENTER_Y, TREE_CROWN_SQUASH_Y, TREE_SHADOW_RADIUS, TREE_SHADOW_LIFT } from '../core/config/world';
+import {
+  WORLD_CONFIG,
+  TREE_TRUNK_HEIGHT,
+  TREE_TRUNK_RADIUS_TOP,
+  TREE_TRUNK_RADIUS_BOTTOM,
+  TREE_TRUNK_COLOR,
+  TREE_ROOT_FLARE_RADIUS,
+  TREE_ROOT_FLARE_HEIGHT,
+  TREE_ROOT_MOUND_RADIUS,
+  TREE_ROOT_MOUND_COLOR,
+  TREE_ROOT_MOUND_LIFT,
+  TREE_CROWN_RADIUS,
+  TREE_CROWN_CENTER_Y,
+  TREE_CROWN_SQUASH_Y,
+  TREE_SHADOW_RADIUS,
+  TREE_SHADOW_LIFT,
+  LOG_RADIUS,
+  LOG_LENGTH,
+  LOG_BODY_COLOR,
+  LOG_END_COLOR,
+} from '../core/config/world';
 import type { PlanetId } from '../core/state';
 
 const planetRadius = WORLD_CONFIG.planetRadius;
@@ -31,12 +51,70 @@ export function createTreeTrunkGeometry(): THREE.CylinderGeometry {
   return geo;
 }
 
+export function createRootFlareGeometry(): THREE.ConeGeometry {
+  const geo = new THREE.ConeGeometry(TREE_ROOT_FLARE_RADIUS, TREE_ROOT_FLARE_HEIGHT, 8);
+  geo.translate(0, TREE_ROOT_FLARE_HEIGHT / 2, 0);
+  return geo;
+}
+
+export function createRootMoundGeometry(): THREE.CircleGeometry {
+  const geo = new THREE.CircleGeometry(TREE_ROOT_MOUND_RADIUS, 16);
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(0, TREE_ROOT_MOUND_LIFT, 0);
+  return geo;
+}
+
 export function createTreeCrownGeometry(): THREE.BufferGeometry {
   const geo = new THREE.IcosahedronGeometry(TREE_CROWN_RADIUS, 2);
   geo.scale(1, TREE_CROWN_SQUASH_Y, 1);
   geo.translate(0, TREE_CROWN_CENTER_Y, 0);
   geo.computeVertexNormals();
   return geo;
+}
+
+/**
+ * Merge parts into ONE non-indexed geometry with per-vertex colors.
+ * `toNonIndexed()` is essential: the trunk cylinder is indexed, and dropping
+ * the index without expanding it was why the trunk rendered as garbage/invisible.
+ */
+function mergeColored(parts: { geo: THREE.BufferGeometry; color: number }[]): THREE.BufferGeometry {
+  const expanded = parts.map((part) => {
+    const g = part.geo.index ? part.geo.toNonIndexed() : part.geo;
+    if (g !== part.geo) part.geo.dispose();
+    return { g, color: new THREE.Color(part.color) };
+  });
+  let total = 0;
+  for (const { g } of expanded) total += g.attributes.position.count;
+
+  const positions = new Float32Array(total * 3);
+  const colors = new Float32Array(total * 3);
+  let offset = 0;
+  for (const { g, color } of expanded) {
+    const pos = g.attributes.position as THREE.BufferAttribute;
+    positions.set(pos.array as Float32Array, offset * 3);
+    for (let i = 0; i < pos.count; i++) {
+      colors[(offset + i) * 3] = color.r;
+      colors[(offset + i) * 3 + 1] = color.g;
+      colors[(offset + i) * 3 + 2] = color.b;
+    }
+    offset += pos.count;
+    g.dispose();
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// Merged trunk + root flare + root mound + crown geometry for one tree variant.
+export function createTreeVariantGeometry(crownColor: number): THREE.BufferGeometry {
+  return mergeColored([
+    { geo: createTreeTrunkGeometry(), color: TREE_TRUNK_COLOR },
+    { geo: createRootFlareGeometry(), color: TREE_TRUNK_COLOR },
+    { geo: createRootMoundGeometry(), color: TREE_ROOT_MOUND_COLOR },
+    { geo: createTreeCrownGeometry(), color: crownColor },
+  ]);
 }
 
 export function createContactShadowGeometry(): THREE.CircleGeometry {
@@ -46,51 +124,14 @@ export function createContactShadowGeometry(): THREE.CircleGeometry {
   return geo;
 }
 
-// Merged trunk + crown geometry for one tree variant. Trunk vertices are brown,
-// crown vertices carry the variant color; one InstancedMesh per variant.
-export function createTreeVariantGeometry(crownColor: number): THREE.BufferGeometry {
-  const trunkGeo = createTreeTrunkGeometry();
-  const crownGeo = createTreeCrownGeometry();
-  const trunkPos = trunkGeo.attributes.position as THREE.BufferAttribute;
-  const crownPos = crownGeo.attributes.position as THREE.BufferAttribute;
-  const tc = trunkPos.count;
-  const cc = crownPos.count;
-  const positions = new Float32Array((tc + cc) * 3);
-  const colors = new Float32Array((tc + cc) * 3);
-  const trunkCol = new THREE.Color(TREE_TRUNK_COLOR);
-  const crownCol = new THREE.Color(crownColor);
-  for (let i = 0; i < tc; i++) {
-    positions[i * 3] = trunkPos.getX(i);
-    positions[i * 3 + 1] = trunkPos.getY(i);
-    positions[i * 3 + 2] = trunkPos.getZ(i);
-    colors[i * 3] = trunkCol.r;
-    colors[i * 3 + 1] = trunkCol.g;
-    colors[i * 3 + 2] = trunkCol.b;
-  }
-  const base = tc * 3;
-  for (let i = 0; i < cc; i++) {
-    positions[base + i * 3] = crownPos.getX(i);
-    positions[base + i * 3 + 1] = crownPos.getY(i);
-    positions[base + i * 3 + 2] = crownPos.getZ(i);
-    colors[base + i * 3] = crownCol.r;
-    colors[base + i * 3 + 1] = crownCol.g;
-    colors[base + i * 3 + 2] = crownCol.b;
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  geo.computeVertexNormals();
-  return geo;
-}
-
 export function treeMaterials(): {
   trunk: THREE.MeshStandardMaterial;
   crown: THREE.MeshStandardMaterial[];
   shadow: THREE.MeshBasicMaterial;
 } {
   return {
-    trunk: new THREE.MeshStandardMaterial({ color: TREE_TRUNK_COLOR, roughness: 0.95, metalness: 0 }),
-    crown: CROWN_COLORS.map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, metalness: 0 })),
+    trunk: new THREE.MeshStandardMaterial({ color: TREE_TRUNK_COLOR, roughness: 1, metalness: 0, emissive: 0x000000 }),
+    crown: CROWN_COLORS.map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.9, metalness: 0, emissive: 0x000000 })),
     shadow: new THREE.MeshBasicMaterial({ color: SHADOW_COLOR, transparent: true, opacity: 0.25, depthWrite: false }),
   };
 }
@@ -142,7 +183,23 @@ export function createPlanetMesh(_pid: PlanetId, radius: number): THREE.Mesh {
 
 export function setPlanetTheme(_mesh: THREE.Mesh, _pid: PlanetId): void {}
 
-// Log pile: small cylinder (only for chopped-tree stumps)
-export function createLogPileGeometry(): THREE.CylinderGeometry {
-  return new THREE.CylinderGeometry(0.018, 0.018, 0.045, 6);
+// One log lying along local X: brown cylinder body + lighter tan end caps.
+// A single merged geometry is instanced 3x per plot for the pile pyramid.
+export function createLogGeometry(): THREE.BufferGeometry {
+  const body = new THREE.CylinderGeometry(LOG_RADIUS, LOG_RADIUS, LOG_LENGTH, 8);
+  body.rotateZ(Math.PI / 2);
+
+  const half = LOG_LENGTH / 2;
+  const capA = new THREE.CircleGeometry(LOG_RADIUS, 12);
+  capA.rotateY(Math.PI / 2);
+  capA.translate(half, 0, 0);
+  const capB = new THREE.CircleGeometry(LOG_RADIUS, 12);
+  capB.rotateY(-Math.PI / 2);
+  capB.translate(-half, 0, 0);
+
+  return mergeColored([
+    { geo: body, color: LOG_BODY_COLOR },
+    { geo: capA, color: LOG_END_COLOR },
+    { geo: capB, color: LOG_END_COLOR },
+  ]);
 }

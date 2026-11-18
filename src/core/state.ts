@@ -1,4 +1,4 @@
-import Decimal from 'break_infinity.js';
+﻿import Decimal from 'break_infinity.js';
 import { toMoney } from './money';
 
 export type PlanetId = 'verdant' | 'rocky' | 'crystalis' | 'forge' | 'hub';
@@ -11,7 +11,7 @@ export type Vec3 = { x: number; y: number; z: number };
 
 export type NodeStage = 'sapling' | 'growing' | 'ready' | 'depleted';
 
-export type PlotStage = 'empty' | 'sapling' | 'medium' | 'grown' | 'stump';
+export type PlotStage = 'empty' | 'sapling' | 'medium' | 'grown' | 'falling' | 'logs';
 
 export type WorkerState =
   | 'idle'
@@ -22,7 +22,11 @@ export type WorkerState =
   | 'planting'
   | 'plant'
   | 'chop'
+  | 'chopping'
   | 'pickup'
+  | 'picking'
+  | 'carrying'
+  | 'delivering'
   | 'deliver'
   | 'waiting'
   | 'wander';
@@ -43,7 +47,8 @@ export interface Plot {
   state: PlotStage;
   timer: number;
   reservedBy?: number; // worker id
-  woodLeft?: number; // logs remaining on stump
+  woodLeft?: number; // logs remaining on a 'logs' pile (0..3)
+  fallDir?: Vec3; // tangent direction the tree falls toward
   popTimer?: number; // visual pop scale boost when a growth stage changes
 }
 
@@ -62,6 +67,10 @@ export interface Worker {
   plantTimer?: number; // planter: seconds left in planting animation
   appearTimer?: number; // planter: spawn pop-in seconds left
   stateTimer?: number; // planter: seconds left in the current AI state (debug)
+  chopTimer?: number; // lumberjack: seconds left chopping
+  actionTimer?: number; // carrier: pickup / delivery seconds left
+  carryingLogs?: number; // carrier/self-haul: logs currently held (0..3)
+  standDir?: Vec3; // AI: direction of the standing spot beside the target
 }
 
 export interface PlanetState {
@@ -93,6 +102,14 @@ export interface GameState {
   version: number;
   lastSaved: number;
   currencies: { credits: Decimal; gems: number; starDust: Decimal };
+  /** Cumulative visible wood collected (only ever goes up). */
+  wood: Decimal;
+  /** Logs waiting to be sold at the trade post. */
+  woodToSell: Decimal;
+  /** Simulation clock in seconds (drives the rolling Wood/min window). */
+  simSeconds: number;
+  /** Timestamps (simSeconds) of the last logs taken, pruned to 60 s. */
+  woodLogTimes: number[];
   planets: Record<PlanetId, PlanetState>;
   upgrades: Record<UpgradeId, number>;
   prestige: PrestigeState;
@@ -101,7 +118,8 @@ export interface GameState {
   settings: { sound: boolean; quality: 'low' | 'med' | 'high' };
 }
 
-export const SAVE_VERSION = 3;
+export const SAVE_VERSION = 4;
+export const MIN_SUPPORTED_SAVE_VERSION = 3;
 
 export function initialState(): GameState {
   const zero = new Decimal(0);
@@ -109,6 +127,10 @@ export function initialState(): GameState {
     version: SAVE_VERSION,
     lastSaved: Date.now(),
     currencies: { credits: toMoney(100), gems: 0, starDust: zero },
+    wood: zero,
+    woodToSell: zero,
+    simSeconds: 0,
+    woodLogTimes: [],
     planets: {
       verdant: {
         unlocked: true,
@@ -134,3 +156,4 @@ export function initialState(): GameState {
 }
 
 export const INITIAL_PLANTER = 'planter';
+

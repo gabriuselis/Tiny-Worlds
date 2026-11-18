@@ -4,8 +4,8 @@
 const DEG = Math.PI / 180;
 
 // Overall multiplier so the person is readable at the default zoom.
-// 1.6 makes the ~0.23 u tall model ~0.37 u tall (tree is ~0.46 u).
-export const WORKER_SCALE = 1.6;
+// Model height ~0.232 u; at 1.12 the worker stands ~0.26 u tall (was 1.6 / ~0.37 u).
+export const WORKER_SCALE = 1.12;
 
 // ----- Planter behaviour timings -----
 export const WORKER_MIN_RUN_SECONDS = 3; // must run at least this long before planting
@@ -52,12 +52,31 @@ export const WORKER_MODEL = {
   brimDepth: 0.03,
   brimZ: 0.038,
 
-  // shovel held in the right hand
+  // shovel held in the right hand (planter)
   shovelStickWidth: 0.01,
   shovelStickLength: 0.12,
   shovelBladeWidth: 0.035,
   shovelBladeHeight: 0.045,
   shovelBladeDepth: 0.008,
+
+  // axe held in the right hand (lumberjack)
+  axeHandleWidth: 0.009,
+  axeHandleLength: 0.11,
+  axeHeadWidth: 0.045,
+  axeHeadHeight: 0.026,
+  axeHeadDepth: 0.012,
+
+  // backpack (carrier) sits on the back (-Z)
+  backpackWidth: 0.052,
+  backpackHeight: 0.07,
+  backpackDepth: 0.03,
+  backpackZ: -0.044,
+
+  // logs carried across the shoulders
+  carryLogRadius: 0.011,
+  carryLogLength: 0.1,
+  carryLogY: 0.2,
+  carryLogSpacingZ: 0.023,
 
   // ground shadow
   shadowRadius: 0.075,
@@ -77,6 +96,16 @@ export const WORKER_ANIM = {
   plantDigHz: 2,
   plantArmLift: -1.0,
   plantArmSwing: 0.45,
+
+  chopHz: 1.1,
+  chopLean: 12 * DEG,
+  chopArmStart: -2.35,
+  chopArmSwing: 0.95,
+
+  pickLean: 55 * DEG,
+  pickDrop: 0.045,
+
+  carryLean: 8 * DEG,
 
   idleBreathHz: 0.5,
   idleBreath: 0.02,
@@ -100,6 +129,15 @@ export const WORKER_COLORS = {
   boots: 0x333333,
   cap: 0x1d4ed8,
   capBrim: 0x163fa8,
+  lumberjackHat: 0x6d4c2f,
+  lumberjackHatBrim: 0x553a22,
+  carrierHat: 0xf2b705,
+  carrierHatBrim: 0xc99a04,
+  backpack: 0x6d4c2f,
+  backpackStrap: 0x4e3521,
+  axeHead: 0xb0b6ba,
+  carryLog: 0x8b5a2b,
+  carryLogEnd: 0xd9b37a,
   eyes: 0x111111,
   shovelStick: 0x8b5a2b,
   shovelBlade: 0x9aa0a6,

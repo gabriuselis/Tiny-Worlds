@@ -1,5 +1,5 @@
-import Decimal from 'break_infinity.js';
-import { initialState, SAVE_VERSION } from './state';
+﻿import Decimal from 'break_infinity.js';
+import { initialState, SAVE_VERSION, MIN_SUPPORTED_SAVE_VERSION, type UpgradeId } from './state';
 import { toMoney } from './money';
 import type { GameState } from './state';
 
@@ -43,6 +43,36 @@ function deepMerge<T>(defaults: T, loaded: any): T {
   return out as T;
 }
 
+const PLOT_STATES = new Set(['empty', 'sapling', 'medium', 'grown', 'falling', 'logs']);
+
+const UPGRADE_KEYS: UpgradeId[] = ['planter', 'lumberjack', 'carrier', 'plantSpeed', 'chopSpeed', 'woodValue', 'tapPower', 'maxTrees'];
+
+function normalizeUpgrades(merged: GameState): void {
+  if (!merged.upgrades || typeof merged.upgrades !== 'object') {
+    merged.upgrades = { planter: 0, lumberjack: 0, carrier: 0, plantSpeed: 0, chopSpeed: 0, woodValue: 0, tapPower: 0, maxTrees: 0 };
+  }
+  for (const key of UPGRADE_KEYS) {
+    const v = (merged.upgrades as any)[key];
+    (merged.upgrades as any)[key] = Number.isFinite(v) ? Math.max(0, Math.floor(Number(v))) : 0;
+  }
+}
+
+function normalizePlots(merged: GameState): void {
+  for (const pid of Object.keys(merged.planets) as (keyof GameState['planets'])[]) {
+    const planet = merged.planets[pid];
+    if (!Array.isArray(planet.plots)) { planet.plots = []; continue; }
+    for (const plot of planet.plots) {
+      if (!PLOT_STATES.has(plot.state as string)) plot.state = 'empty';
+      if (!Number.isFinite(plot.timer)) plot.timer = 0;
+      const wood = Number.isFinite(plot.woodLeft) ? Number(plot.woodLeft) : 0;
+      plot.woodLeft = Math.max(0, Math.min(3, Math.round(wood)));
+      if (plot.state === 'logs' && plot.woodLeft === 0) plot.state = 'empty';
+      if (plot.state !== 'logs') plot.woodLeft = 0;
+      if (plot.state !== 'falling') plot.fallDir = undefined;
+    }
+  }
+}
+
 export function deserialize(json: string): GameState | null {
   try {
     const raw = JSON.parse(json, (_key, value) => {
@@ -51,7 +81,7 @@ export function deserialize(json: string): GameState | null {
     });
 
     // Version check: discard old saves
-    if (!raw || raw.version === undefined || raw.version < SAVE_VERSION) {
+    if (!raw || raw.version === undefined || raw.version < MIN_SUPPORTED_SAVE_VERSION) {
       return null;
     }
 
@@ -60,6 +90,15 @@ export function deserialize(json: string): GameState | null {
     const merged = deepMerge(defaults, raw) as GameState;
     // Normalize credits to a Decimal (Money) so .gte() etc. never crash on plain-number saves
     merged.currencies.credits = toMoney(merged.currencies.credits);
+    merged.wood = toMoney(merged.wood);
+    merged.woodToSell = toMoney(merged.woodToSell);
+    merged.simSeconds = Number.isFinite(merged.simSeconds) ? merged.simSeconds : 0;
+    merged.woodLogTimes = Array.isArray(merged.woodLogTimes)
+      ? merged.woodLogTimes.filter((t) => typeof t === 'number' && Number.isFinite(t))
+      : [];
+normalizePlots(merged);
+    normalizeUpgrades(merged);
+    merged.version = SAVE_VERSION;
     return merged;
   } catch {
     return null;
@@ -95,3 +134,4 @@ export function exportSave(state: GameState): string {
 export function importSave(json: string): GameState | null {
   return deserialize(json);
 }
+
