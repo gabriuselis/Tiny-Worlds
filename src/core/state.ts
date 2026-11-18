@@ -1,4 +1,5 @@
 import Decimal from 'break_infinity.js';
+import { toMoney } from './money';
 
 export type PlanetId = 'verdant' | 'rocky' | 'crystalis' | 'forge' | 'hub';
 export type Role = 'planter' | 'lumberjack' | 'carrier' | 'miner' | 'prospector' | 'engineer';
@@ -17,10 +18,13 @@ export type WorkerState =
   | 'dropping'
   | 'walk'
   | 'walkToPost'
+  | 'walking'
+  | 'planting'
   | 'plant'
   | 'chop'
   | 'pickup'
   | 'deliver'
+  | 'waiting'
   | 'wander';
 
 export interface Node {
@@ -35,13 +39,12 @@ export interface Node {
 
 export interface Plot {
   id: number;
-  row: number;
-  col: number;
   dir: Vec3;
   state: PlotStage;
   timer: number;
-  reservedBy?: number;
-  woodLeft: number;
+  reservedBy?: number; // worker id
+  woodLeft?: number; // logs remaining on stump
+  popTimer?: number; // visual pop scale boost when a growth stage changes
 }
 
 export interface Worker {
@@ -56,6 +59,9 @@ export interface Worker {
   name: string;
   stuckTimer: number;
   dropProgress?: number; // 0..1 sky-drop animation
+  plantTimer?: number; // planter: seconds left in planting animation
+  appearTimer?: number; // planter: spawn pop-in seconds left
+  stateTimer?: number; // planter: seconds left in the current AI state (debug)
 }
 
 export interface PlanetState {
@@ -95,14 +101,14 @@ export interface GameState {
   settings: { sound: boolean; quality: 'low' | 'med' | 'high' };
 }
 
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
 
 export function initialState(): GameState {
   const zero = new Decimal(0);
   return {
     version: SAVE_VERSION,
     lastSaved: Date.now(),
-    currencies: { credits: new Decimal(10), gems: 0, starDust: zero },
+    currencies: { credits: toMoney(100), gems: 0, starDust: zero },
     planets: {
       verdant: {
         unlocked: true,

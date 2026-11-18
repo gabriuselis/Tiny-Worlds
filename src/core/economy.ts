@@ -2,6 +2,7 @@ import Decimal from 'break_infinity.js';
 import { PLANETS } from './config/planets';
 import { WORKERS, milestoneMultiplier } from './config/workers';
 import { UPGRADES } from './config/upgrades';
+import { gte, mul } from './money';
 import type { GameState, PlanetId, Role, UpgradeId } from './state';
 
 export function globalIncomeMultiplier(state: GameState): number {
@@ -27,13 +28,13 @@ export function incomePerSecond(state: GameState): Decimal {
 
 export function canAffordUpgrade(state: GameState, id: UpgradeId): boolean {
   const level = state.upgrades[id];
-  const cost = UPGRADES[id].baseCost.mul(UPGRADES[id].growth ** level);
-  return state.currencies.credits.gte(cost);
+  const cost = mul(UPGRADES[id].baseCost, UPGRADES[id].growth ** level);
+  return gte(state.currencies.credits, cost);
 }
 
 export function canAffordWorker(state: GameState, role: Role, existing: number): boolean {
-  const cost = WORKERS[role].baseCost.mul(WORKERS[role].growth ** existing);
-  return state.currencies.credits.gte(cost);
+  const cost = mul(WORKERS[role].baseCost, WORKERS[role].growth ** existing);
+  return gte(state.currencies.credits, cost);
 }
 
 export function maxTrees(state: GameState, pid: PlanetId): number {

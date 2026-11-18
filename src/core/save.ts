@@ -1,5 +1,6 @@
 import Decimal from 'break_infinity.js';
 import { initialState, SAVE_VERSION } from './state';
+import { toMoney } from './money';
 import type { GameState } from './state';
 
 const STORAGE_KEY = 'tiny_worlds_save_v1';
@@ -56,7 +57,10 @@ export function deserialize(json: string): GameState | null {
 
     // Deep-merge loaded data over defaults so missing arrays/fields get defaults
     const defaults = initialState();
-    return deepMerge(defaults, raw) as GameState;
+    const merged = deepMerge(defaults, raw) as GameState;
+    // Normalize credits to a Decimal (Money) so .gte() etc. never crash on plain-number saves
+    merged.currencies.credits = toMoney(merged.currencies.credits);
+    return merged;
   } catch {
     return null;
   }

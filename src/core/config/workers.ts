@@ -14,8 +14,8 @@ export interface WorkerConfig {
 export const WORKERS: Record<Role, WorkerConfig> = {
   planter: {
     role: 'planter',
-    baseCost: new Decimal(5),
-    growth: 1.07,
+    baseCost: new Decimal(10),
+    growth: 1.15,
     speed: 1.0,
     carry: 1,
     cycleTime: 3,

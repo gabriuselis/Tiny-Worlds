@@ -35,7 +35,7 @@ export function setupGestures(o: Opts) {
   };
 
   const isUI = (t: EventTarget | null) =>
-    t instanceof Element && !!t.closest('button, a, input, [data-ui]');
+    t instanceof Element && !!t.closest('button, a, input, [data-ui], #dev-menu');
 
   // Distance above surface = dist - planetRadius
   const distAboveSurface = () => dist - o.planetRadius;
@@ -105,8 +105,9 @@ export function setupGestures(o: Opts) {
   document.addEventListener('touchmove', block, { passive: false });
 
   // iOS Safari gesture events
-  const igstart = (e: Event) => { e.preventDefault(); pinchPrev = 0; lastEvent = 'gesturestart'; };
+  const igstart = (e: Event) => { if (isUI(e.target)) return; e.preventDefault(); pinchPrev = 0; lastEvent = 'gesturestart'; };
   const igchange = (e: Event) => {
+    if (isUI(e.target)) return;
     e.preventDefault();
     const ge = e as any;
     if (ge.scale !== 1) {
@@ -115,15 +116,15 @@ export function setupGestures(o: Opts) {
     }
     lastEvent = 'gesturechange';
   };
-  const igend = (e: Event) => { e.preventDefault(); lastEvent = 'gestureend'; };
+  const igend = (e: Event) => { if (isUI(e.target)) return; e.preventDefault(); lastEvent = 'gestureend'; };
   window.addEventListener('gesturestart', igstart, { passive: false });
   window.addEventListener('gesturechange', igchange, { passive: false });
   window.addEventListener('gestureend', igend, { passive: false });
 
   return {
     update: () => {
-      // Ignore gestures when a dialog is open
-      if (document.querySelector('dialog[open]')) return;
+      // Ignore gestures when the dev menu is open
+      if (document.getElementById('dev-menu')?.hasAttribute('open')) return;
       frames++;
       dist += (targetDist - dist) * 0.2;
       const dAbove = distAboveSurface();

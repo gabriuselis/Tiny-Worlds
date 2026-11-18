@@ -1,5 +1,6 @@
 import Decimal from 'break_infinity.js';
 import { incomePerSecond } from './economy';
+import { add, mul } from './money';
 import type { GameState } from './state';
 
 const DEFAULT_CAP_HOURS = 8;
@@ -17,12 +18,12 @@ export function calculateOffline(state: GameState, nowMs: number): OfflineResult
   const seconds = elapsed / 1000;
   const capped = nowMs - state.lastSaved > capMs;
   const income = incomePerSecond(state);
-  const gained = income.mul(seconds);
+  const gained = mul(income, seconds);
   return { creditsGained: gained, secondsOffline: seconds, capped };
 }
 
 export function applyOffline(state: GameState, result: OfflineResult): GameState {
-  state.currencies.credits = state.currencies.credits.add(result.creditsGained);
+  state.currencies.credits = add(state.currencies.credits, result.creditsGained);
   state.lastSaved = Date.now();
   return state;
 }

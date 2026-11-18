@@ -3,6 +3,8 @@ import { PLANETS } from '../core/config/planets';
 import { costOf } from '../core/config/workers';
 import { upgradeCost } from '../core/config/upgrades';
 import { incomePerSecond } from '../core/economy';
+import { format, gte } from '../core/money';
+import { PLOT_COUNT } from '../core/config/world';
 import type { GameState, Role, UpgradeId } from '../core/state';
 
 // ============================================================
@@ -22,6 +24,7 @@ function initLogBox(): void {
   logBox.id = 'ui-log-box';
   logBox.style.cssText = `position:fixed;bottom:2px;left:2px;z-index:2147483647;pointer-events:none;font-family:monospace;font-size:11px;color:#0f0;background:rgba(0,0,0,0.85);padding:8px 10px;border-radius:6px;max-width:46vw;max-height:34vh;overflow:auto;white-space:pre-wrap;word-break:break-all;line-height:1.4;border:1px solid #0f0;`;
   document.body.appendChild(logBox);
+  logBox.style.display = 'none'; // hidden by default; toggleable via dev menu
 
   // Restore last log lines from sessionStorage (survives a reload)
   const storedLog = sessionStorage.getItem('tw_log_lines');
@@ -156,6 +159,15 @@ const HIRE_ROLES: Record<UpgradeId, Role | null> = {
   maxTrees: null,
 };
 
+// Cards visible but locked (not yet playable) in this stage; only Planter is hireable.
+const LOCKED_CARDS: UpgradeId[] = ['lumberjack', 'carrier', 'plantSpeed', 'chopSpeed', 'woodValue'];
+
+const HIRE_VALUE_LABEL: Partial<Record<Role, string>> = {
+  planter: 'Planters',
+  lumberjack: 'Lumberjacks',
+  carrier: 'Carriers',
+};
+
 export interface UIHandlers {
   onHirePlanter: () => void;
   onHireLumberjack: () => void;
@@ -165,7 +177,6 @@ export interface UIHandlers {
   onDevFill: () => void;
   onDevClear: () => void;
   onDevReset: () => void;
-  onDevDensity: (count: number) => void;
   onDevToggleGrid: () => void;
 }
 
@@ -198,7 +209,6 @@ export class UI {
   private lastGoal = '';
   private lastSpeedActive = false;
   private lastAutoActive = false;
-  private lastHarvested = 0;
 
   // Progress dot elements (built once)
   private progressDots: HTMLElement[] = [];
@@ -441,7 +451,7 @@ export class UI {
     const c = state.currencies.credits;
     const g = state.currencies.gems;
 
-    const creditsText = fmt(c);
+    const creditsText = format(c);
     if (creditsText !== this.lastCredits) {
       this.elCredits.textContent = creditsText;
       this.lastCredits = creditsText;
@@ -469,24 +479,22 @@ export class UI {
 
     this.elPlanetName.textContent = PLANETS.verdant.name;
 
-    const goalText = `Harvest 500 trees (${verdant.treesHarvested}/500)`;
+    const planted = verdant.plots.filter((p) => p.state !== 'empty').length;
+    const goalText = `Planted trees: ${planted}/${PLOT_COUNT}`;
     if (goalText !== this.lastGoal) {
       this.elGoal.textContent = goalText;
       this.lastGoal = goalText;
     }
 
-    // Progress dots (only when harvested changes)
-    const harvested = verdant.treesHarvested;
-    if (harvested !== this.lastHarvested) {
-      this.lastHarvested = harvested;
-      for (let i = 1; i <= 5; i++) {
-        const unlocked = harvested >= i * 100;
-        const dot = this.progressDots[i - 1];
-        if (i === 5) {
-          dot.className = 'dot locked lock';
-        } else {
-          dot.className = unlocked ? 'dot' : 'dot locked';
-        }
+    // Progress dots (fill by planted share)
+    const share = planted / PLOT_COUNT;
+    for (let i = 1; i <= 5; i++) {
+      const dot = this.progressDots[i - 1];
+      if (i === 5) {
+        dot.className = 'dot locked lock';
+      } else {
+        const unlocked = share >= i / 5;
+        dot.className = unlocked ? 'dot' : 'dot locked';
       }
     }
 
@@ -511,16 +519,17 @@ export class UI {
       if (HIRE_ROLES[s.id]) {
         role = HIRE_ROLES[s.id]!;
         const existing = verdant.workers.filter((w) => w.role === role).length;
-        valueText = String(existing);
+        valueText = `${HIRE_VALUE_LABEL[role] ?? role}: ${existing}`;
         cost = costOf(role, existing);
-        affordable = c.gte(cost);
+        affordable = gte(c, cost);
       } else {
         valueText = String(level);
         cost = upgradeCost(s.id, level);
-        affordable = c.gte(cost);
+        affordable = gte(c, cost);
       }
+      if (LOCKED_CARDS.includes(s.id)) affordable = false;
 
-      const costText = `\u{1F4B0} ${fmt(cost)}`;
+      const costText = `\u{1F4B0} ${format(cost)}`;
       const cardState = { value: valueText, cost: costText, affordable };
       const last = this.lastCardValues.get(s.id);
       if (!last || last.value !== cardState.value || last.cost !== cardState.cost || last.affordable !== cardState.affordable) {
@@ -564,157 +573,200 @@ function fmt(d: number | string | Decimal): string {
 }
 
 // ============================================================
-// Dev menu as native <dialog> (top layer, isolated from UI root)
+// Dev menu as a plain <div id="dev-menu"> overlay (not <dialog>)
 // ============================================================
 
-let elDevDialog: HTMLDialogElement | null = null;
+let elDevMenu: HTMLDivElement | null = null;
+let elDevBackdrop: HTMLDivElement | null = null;
 let elDevPlotCount: HTMLDivElement | null = null;
 let elDevFps: HTMLDivElement | null = null;
+let elDevCoverage: HTMLDivElement | null = null;
+let elDevCoverageDetail: HTMLDivElement | null = null;
+let elDevResults: HTMLDivElement | null = null;
 let devMenuOpen = false;
 let devMenuOpenTime = 0;
 let uiFrozen = false;
 let devStatsTimer: number | null = null;
+let devLastInteraction = 0;
+let devLastButtonId = '';
+let devLastEventType = '';
+const DEV_DUPLICATE_MS = 700;
 
-function stop(e: Event): void {
-  e.stopPropagation();
-}
+function createDevMenu(): void {
+  if (elDevMenu) return;
 
-function createDevDialog(): void {
-  if (elDevDialog) return;
-
-  const dialog = document.createElement('dialog');
-  dialog.id = 'dev-menu';
-  dialog.className = 'dev-menu';
-  dialog.setAttribute('data-ui', '');
-  dialog.innerHTML = `
-<div class="dev-menu-header">
-  <div class="dev-menu-title">Dev menu</div>
-  <button type="button" class="dev-close" id="dev-close" title="Close">&#10006;</button>
-</div>
-<div class="dev-menu-section">
-  <button type="button" class="dev-btn" id="dev-fill">Fill planet</button>
-  <button type="button" class="dev-btn" id="dev-clear">Clear planet</button>
-  <button type="button" class="dev-btn" id="dev-reset">Reset game</button>
-</div>
-<div class="dev-menu-section">
-  <div class="dev-subtitle">Credits</div>
-  <button type="button" class="dev-btn" id="dev-credits-1000">+1000 credits</button>
-  <button type="button" class="dev-btn" id="dev-credits-10000">+10000 credits</button>
-</div>
-<div class="dev-menu-section">
-  <div class="dev-subtitle">Spawn worker</div>
-  <button type="button" class="dev-btn" id="dev-spawn-planter">Spawn planter</button>
-  <button type="button" class="dev-btn" id="dev-spawn-lumberjack">Spawn lumberjack</button>
-  <button type="button" class="dev-btn" id="dev-spawn-carrier">Spawn carrier</button>
-</div>
-<div class="dev-menu-section">
-  <div class="dev-subtitle">Speed</div>
-  <button type="button" class="dev-btn dev-speed" id="dev-speed-1">Speed x1</button>
-  <button type="button" class="dev-btn dev-speed" id="dev-speed-5">Speed x5</button>
-  <button type="button" class="dev-btn dev-speed" id="dev-speed-20">Speed x20</button>
-</div>
-<div class="dev-menu-section">
-  <div class="dev-subtitle">Density</div>
-  <button type="button" class="dev-btn dev-density" id="dev-density-600">600 plots</button>
-  <button type="button" class="dev-btn dev-density" id="dev-density-1000">1000 plots</button>
-  <button type="button" class="dev-btn dev-density" id="dev-density-1500">1500 plots</button>
-  <button type="button" class="dev-btn" id="dev-toggle-grid">Show grid</button>
-</div>
-<div class="dev-menu-section">
-  <div class="dev-subtitle">Display</div>
-  <button type="button" class="dev-btn dev-toggle" id="dev-toggle-fps">Show FPS</button>
-  <button type="button" class="dev-btn dev-toggle" id="dev-toggle-log">Hide debug log</button>
-</div>
-<div class="dev-menu-section">
-  <div class="dev-stat" id="dev-plot-count">Plots: --</div>
-  <div class="dev-stat" id="dev-fps">FPS: --</div>
+  const menu = document.createElement('div');
+  menu.id = 'dev-menu';
+  menu.className = 'dev-menu';
+  menu.setAttribute('data-ui', '');
+  menu.hidden = true;
+  menu.innerHTML = `
+<div class="dev-backdrop"></div>
+<div class="dev-panel">
+  <div class="dev-menu-header">
+    <div class="dev-menu-title">Dev menu</div>
+    <button type="button" class="dev-close" id="dev-close-top" title="Close">&#10006;</button>
+  </div>
+  <div class="dev-menu-body">
+    <div class="dev-menu-section">
+      <button type="button" class="dev-btn" id="dev-fill">Fill planet</button>
+      <button type="button" class="dev-btn" id="dev-clear">Clear planet</button>
+      <button type="button" class="dev-btn" id="dev-reset">Reset game</button>
+    </div>
+    <div class="dev-menu-section">
+      <div class="dev-subtitle">Credits</div>
+      <button type="button" class="dev-btn" id="dev-credits-1000">+1000 credits</button>
+      <button type="button" class="dev-btn" id="dev-credits-10000">+10000 credits</button>
+    </div>
+    <div class="dev-menu-section">
+      <div class="dev-subtitle">Spawn worker</div>
+      <button type="button" class="dev-btn" id="dev-spawn-planter">Spawn planter</button>
+      <button type="button" class="dev-btn" id="dev-spawn-lumberjack">Spawn lumberjack</button>
+      <button type="button" class="dev-btn" id="dev-spawn-carrier">Spawn carrier</button>
+    </div>
+    <div class="dev-menu-section">
+      <div class="dev-subtitle">Speed</div>
+      <button type="button" class="dev-btn dev-speed" id="dev-speed-1">Speed x1</button>
+      <button type="button" class="dev-btn dev-speed" id="dev-speed-5">Speed x5</button>
+      <button type="button" class="dev-btn dev-speed" id="dev-speed-20">Speed x20</button>
+    </div>
+    <div class="dev-menu-section">
+      <button type="button" class="dev-btn" id="dev-toggle-grid">Show grid</button>
+      <button type="button" class="dev-btn" id="dev-surface-check">Surface check</button>
+      <button type="button" class="dev-btn" id="dev-plot-dots">Plot dots</button>
+      <button type="button" class="dev-btn" id="dev-workers-debug">Workers debug</button>
+    </div>
+    <div class="dev-menu-section">
+      <div class="dev-subtitle">Display</div>
+      <button type="button" class="dev-btn dev-toggle" id="dev-toggle-fps">Show FPS</button>
+      <button type="button" class="dev-btn dev-toggle" id="dev-toggle-log">Hide debug log</button>
+    </div>
+    <div class="dev-menu-section">
+      <div class="dev-subtitle">Coverage</div>
+      <div id="dev-coverage-detail"></div>
+    </div>
+    <div class="dev-menu-section">
+      <div class="dev-subtitle">Self-test</div>
+      <button type="button" class="dev-btn" id="dev-self-test">Run self-test</button>
+      <button type="button" class="dev-btn" id="dev-test-tree">Test tree</button>
+      <button type="button" class="dev-btn" id="dev-test-worker">Test worker</button>
+      <div class="dev-self-results" id="dev-self-results"></div>
+    </div>
+  </div>
+  <div class="dev-menu-footer">
+    <div class="dev-stat" id="dev-plot-count">Plots: --</div>
+    <div class="dev-stat" id="dev-fps">FPS: --</div>
+    <div class="dev-stat" id="dev-coverage">Coverage: --</div>
+    <button type="button" class="dev-close" id="dev-close-bottom" title="Close">Close</button>
+  </div>
 </div>
 `;
-  document.body.appendChild(dialog);
-  elDevDialog = dialog;
-  elDevPlotCount = dialog.querySelector('#dev-plot-count')!;
-  elDevFps = dialog.querySelector('#dev-fps')!;
+  document.body.appendChild(menu);
+  elDevMenu = menu;
+  elDevBackdrop = menu.querySelector('.dev-backdrop')!;
+  elDevPlotCount = menu.querySelector('#dev-plot-count')!;
+  elDevFps = menu.querySelector('#dev-fps')!;
+  elDevCoverage = menu.querySelector('#dev-coverage')!;
+  elDevCoverageDetail = menu.querySelector('#dev-coverage-detail')!;
+  elDevResults = menu.querySelector('#dev-self-results')!;
 
-  const elDevClose = dialog.querySelector('#dev-close')!;
-  const elDevFill = dialog.querySelector('#dev-fill')!;
-  const elDevClear = dialog.querySelector('#dev-clear')!;
-  const elDevReset = dialog.querySelector('#dev-reset')!;
-  const elDevCredits1000 = dialog.querySelector('#dev-credits-1000')!;
-  const elDevCredits10000 = dialog.querySelector('#dev-credits-10000')!;
-  const elDevSpawnPlanter = dialog.querySelector('#dev-spawn-planter')!;
-  const elDevSpawnLumberjack = dialog.querySelector('#dev-spawn-lumberjack')!;
-  const elDevSpawnCarrier = dialog.querySelector('#dev-spawn-carrier')!;
-  const elDevSpeed1 = dialog.querySelector('#dev-speed-1')!;
-  const elDevSpeed5 = dialog.querySelector('#dev-speed-5')!;
-  const elDevSpeed20 = dialog.querySelector('#dev-speed-20')!;
-  const elDevDensity600 = dialog.querySelector('#dev-density-600')!;
-  const elDevDensity1000 = dialog.querySelector('#dev-density-1000')!;
-  const elDevDensity1500 = dialog.querySelector('#dev-density-1500')!;
-  const elDevToggleGrid = dialog.querySelector('#dev-toggle-grid')!;
-  const elDevToggleFps = dialog.querySelector('#dev-toggle-fps')!;
-  const elDevToggleLog = dialog.querySelector('#dev-toggle-log')!;
+  menu.addEventListener('pointerup', onDevMenuEvent, true);
+  menu.addEventListener('click', onDevMenuEvent, true);
+}
 
-  elDevClose.addEventListener('click', (e) => { stop(e); closeDevDialog(); });
-  elDevFill.addEventListener('click', (e) => { stop(e); logEvent('Dev: Fill planet pressed'); (window as any).__fillTrees?.(); showToast('Done: planet filled'); });
-  elDevClear.addEventListener('click', (e) => { stop(e); logEvent('Dev: Clear planet pressed'); (window as any).__clearTrees?.(); showToast('Done: planet cleared'); });
-  elDevReset.addEventListener('click', (e) => { stop(e); logEvent('Dev: Reset game pressed'); (window as any).__resetGame?.(); });
-  elDevCredits1000.addEventListener('click', (e) => { stop(e); logEvent('Dev: +1000 credits pressed'); (window as any).__addCredits?.(1000); showToast('Done: +1000 credits'); });
-  elDevCredits10000.addEventListener('click', (e) => { stop(e); logEvent('Dev: +10000 credits pressed'); (window as any).__addCredits?.(10000); showToast('Done: +10000 credits'); });
-  elDevSpawnPlanter.addEventListener('click', (e) => { stop(e); logEvent('Dev: Spawn planter pressed'); (window as any).__spawnWorker?.('planter'); showToast('Done: planter spawned'); });
-  elDevSpawnLumberjack.addEventListener('click', (e) => { stop(e); logEvent('Dev: Spawn lumberjack pressed'); (window as any).__spawnWorker?.('lumberjack'); showToast('Done: lumberjack spawned'); });
-  elDevSpawnCarrier.addEventListener('click', (e) => { stop(e); logEvent('Dev: Spawn carrier pressed'); (window as any).__spawnWorker?.('carrier'); showToast('Done: carrier spawned'); });
-  elDevSpeed1.addEventListener('click', (e) => { stop(e); logEvent('Dev: Speed x1 pressed'); (window as any).__setSpeed?.(1); showToast('Done: speed x1'); });
-  elDevSpeed5.addEventListener('click', (e) => { stop(e); logEvent('Dev: Speed x5 pressed'); (window as any).__setSpeed?.(5); showToast('Done: speed x5'); });
-  elDevSpeed20.addEventListener('click', (e) => { stop(e); logEvent('Dev: Speed x20 pressed'); (window as any).__setSpeed?.(20); showToast('Done: speed x20'); });
-  elDevDensity600.addEventListener('click', (e) => { stop(e); logEvent('Dev: Density 600 pressed'); (window as any).__setDensity?.(600); showToast('Done: 600 plots'); });
-  elDevDensity1000.addEventListener('click', (e) => { stop(e); logEvent('Dev: Density 1000 pressed'); (window as any).__setDensity?.(1000); showToast('Done: 1000 plots'); });
-  elDevDensity1500.addEventListener('click', (e) => { stop(e); logEvent('Dev: Density 1500 pressed'); (window as any).__setDensity?.(1500); showToast('Done: 1500 plots'); });
-  elDevToggleGrid.addEventListener('click', (e) => { stop(e); logEvent('Dev: Toggle grid pressed'); (window as any).__toggleGrid?.(); });
-  elDevToggleFps.addEventListener('click', (e) => { stop(e); logEvent('Dev: Toggle FPS pressed'); (window as any).__toggleFps?.(); });
-  elDevToggleLog.addEventListener('click', (e) => { stop(e); logEvent('Dev: Toggle debug log pressed'); (window as any).__toggleLog?.(); });
+function onDevMenuEvent(e: Event): void {
+  const ev = e as PointerEvent | MouseEvent;
+  const target = ev.target as HTMLElement | null;
+  ev.stopPropagation();
 
-  // Stop propagation on all pointer/touch events inside dialog
-  for (const ev of ['pointerdown', 'pointermove', 'pointerup', 'touchstart', 'touchmove', 'click']) {
-    dialog.addEventListener(ev, stop, true);
+  if (target === elDevMenu || target === elDevBackdrop) {
+    closeDevDialog();
+    return;
   }
 
-  // Dialog lifecycle events
-  dialog.addEventListener('cancel', (e) => {
-    logEvent('DIALOG cancel event (Escape/backdrop)');
-    e.preventDefault();
-  });
-  dialog.addEventListener('close', () => {
-    logEvent('DIALOG close event');
-    devMenuOpen = false;
-    uiFrozen = false;
-    if (devStatsTimer) { clearTimeout(devStatsTimer); devStatsTimer = null; }
-    logEvent(`Dev menu closed after ${((Date.now() - devMenuOpenTime) / 1000).toFixed(1)}s`);
-    // Reset zoom to default when menu closes
-    (window as any).__resetZoomToDefault?.();
-  });
+  const btn = target?.closest('button');
+  if (!btn) return;
+  const id = btn.id;
+  const isClose = id === 'dev-close-top' || id === 'dev-close-bottom';
+  const now = performance.now();
+  // Suppress the duplicate click that follows the pointerup of the SAME tap.
+  // A second real tap has the same event type as the first, so it always runs.
+  if (
+    !isClose &&
+    id === devLastButtonId &&
+    ev.type !== devLastEventType &&
+    now - devLastInteraction < DEV_DUPLICATE_MS
+  ) {
+    ev.preventDefault();
+    return;
+  }
+  devLastButtonId = id;
+  devLastEventType = ev.type;
+  devLastInteraction = now;
+
+  const run = (label: string, fn: () => void): void => {
+    try {
+      fn();
+      logEvent(`Dev: ${label} OK`);
+      showToast(`Done: ${label}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logEvent(`Dev: ${label} FAILED: ${msg}`);
+      showToast(`Fail: ${label}`);
+    }
+  };
+
+  const actions: { [id: string]: () => void } = {
+    'dev-fill': () => (window as any).__fillTrees?.(),
+    'dev-clear': () => (window as any).__clearTrees?.(),
+    'dev-reset': () => (window as any).__resetGame?.(),
+    'dev-credits-1000': () => (window as any).__addCredits?.(1000),
+    'dev-credits-10000': () => (window as any).__addCredits?.(10000),
+    'dev-spawn-planter': () => (window as any).__spawnWorker?.('planter'),
+    'dev-spawn-lumberjack': () => (window as any).__spawnWorker?.('lumberjack'),
+    'dev-spawn-carrier': () => (window as any).__spawnWorker?.('carrier'),
+    'dev-speed-1': () => (window as any).__setSpeed?.(1),
+    'dev-speed-5': () => (window as any).__setSpeed?.(5),
+    'dev-speed-20': () => (window as any).__setSpeed?.(20),
+    'dev-toggle-grid': () => (window as any).__toggleGrid?.(),
+    'dev-surface-check': () => (window as any).__surfaceCheck?.(),
+    'dev-plot-dots': () => (window as any).__togglePlotDots?.(),
+    'dev-workers-debug': () => { const d = (window as any).__getWorkersDebug?.(); if (d) { logEvent(d); showToast(d.split('\n').slice(0, 5).join(' | ')); } },
+    'dev-toggle-fps': () => (window as any).__toggleFps?.(),
+    'dev-toggle-log': () => (window as any).__toggleLog?.(),
+    'dev-self-test': runSelfTest,
+    'dev-test-tree': () => (window as any).__testTree?.(),
+    'dev-test-worker': () => (window as any).__testWorker?.(),
+  };
+
+  if (isClose) { closeDevDialog(); return; }
+  const fn = actions[id];
+  if (fn) run(id, fn);
 }
 
 function openDevDialog(): void {
-  createDevDialog();
-  if (!elDevDialog) return;
+  createDevMenu();
+  if (!elDevMenu) return;
   devMenuOpen = true;
   uiFrozen = true;
   devMenuOpenTime = Date.now();
+  elDevMenu.hidden = false;
+  elDevMenu.setAttribute('open', '');
   logEvent('Dev menu opened');
   logStack('openDevDialog called from');
-  elDevDialog.showModal();
   updateDevStats();
   startDevStatsTimer();
 }
 
 function closeDevDialog(): void {
-  if (!devMenuOpen || !elDevDialog) return;
+  if (!devMenuOpen || !elDevMenu) return;
   logStack('closeDevDialog called from');
-  elDevDialog.close();
+  elDevMenu.hidden = true;
+  elDevMenu.removeAttribute('open');
   devMenuOpen = false;
   uiFrozen = false;
   if (devStatsTimer) { clearTimeout(devStatsTimer); devStatsTimer = null; }
-  logEvent('Dev menu closed via X button');
+  logEvent(`Dev menu closed after ${((Date.now() - devMenuOpenTime) / 1000).toFixed(1)}s`);
   (window as any).__resetZoomToDefault?.();
 }
 
@@ -732,7 +784,6 @@ function updateDevStats(plotCount?: number, fps?: number): void {
   if (elDevPlotCount && plotCount !== undefined) {
     elDevPlotCount.textContent = `Plots: ${plotCount}`;
   } else if (elDevPlotCount) {
-    // Read from window global if available
     const plots = (window as any).__plotCount;
     if (plots !== undefined) elDevPlotCount.textContent = `Plots: ${plots}`;
   }
@@ -742,6 +793,45 @@ function updateDevStats(plotCount?: number, fps?: number): void {
     const fpsVal = (window as any).__debugFPS;
     if (fpsVal !== undefined) elDevFps.textContent = `FPS: ${fpsVal}`;
   }
+  // Coverage debug line (temporary)
+  if (elDevCoverage && (window as any).__getCoverageStats) {
+    elDevCoverage.textContent = (window as any).__getCoverageStats();
+  }
+  if (elDevCoverageDetail && (window as any).__getCoverageStats) {
+    elDevCoverageDetail.textContent = (window as any).__getCoverageStats();
+  }
+}
+
+function runSelfTest(): void {
+  const results: string[] = [];
+  let pass = 0;
+  if (elDevResults) elDevResults.textContent = '';
+  const add = (label: string, ok: boolean): void => {
+    results.push(`${label}: ${ok ? 'PASS' : 'FAIL'}`);
+    if (ok) pass++;
+    logEvent(`Self-test: ${label} ${ok ? 'PASS' : 'FAIL'}`);
+    if (elDevResults) {
+      const line = document.createElement('div');
+      line.textContent = `${label}: ${ok ? 'PASS' : 'FAIL'}`;
+      line.className = ok ? 'dev-self-pass' : 'dev-self-fail';
+      elDevResults.appendChild(line);
+    }
+  };
+  const tryRun = (label: string, fn: () => void): boolean => {
+    try { fn(); return true; } catch (err) { logEvent(`Self-test: ${label} error: ${err instanceof Error ? err.message : err}`); return false; }
+  };
+  const creditsBefore = document.getElementById('ui-credits')?.textContent ?? '';
+  const plotsBefore = (window as any).__plotCount;
+
+  add('Fill planet', tryRun('fill', () => (window as any).__fillTrees?.()) && Number((window as any).__plotCount) >= Number(plotsBefore || 0));
+  add('Clear planet', tryRun('clear', () => (window as any).__clearTrees?.()));
+  add('Credits', (() => { const ok = tryRun('credits', () => (window as any).__addCredits?.(100)); const after = document.getElementById('ui-credits')?.textContent; return ok && after !== creditsBefore; })());
+  add('Speed', tryRun('speed', () => { (window as any).__setSpeed?.(5); (window as any).__setSpeed?.(1); }));
+  add('Grid', tryRun('grid', () => { (window as any).__toggleGrid?.(); (window as any).__toggleGrid?.(); }));
+  add('Overall', results.every((r) => r.endsWith(': PASS')));
+
+  showToast(`Self-test: ${pass}/${results.length} PASS`);
+  logEvent(`Self-test result: ${pass}/${results.length}`);
 }
 
 // ============================================================
@@ -772,22 +862,16 @@ export function applyUrlParams(): void {
   const params = new URLSearchParams(window.location.search);
   const fill = params.get('fill');
   const clear = params.get('clear');
-  const density = params.get('density');
   const menu = params.get('menu');
   const reset = params.get('reset');
 
   logEvent(`Page load #${loadCounter}`);
-  logEvent(`URL params: fill=${fill}, clear=${clear}, density=${density}, menu=${menu}, reset=${reset}`);
+  logEvent(`URL params: fill=${fill}, clear=${clear}, menu=${menu}, reset=${reset}`);
 
   if (reset === '1') {
     logEvent('URL: reset save');
     (window as any).__resetGame?.();
     return;
-  }
-
-  if (density) {
-    logEvent(`URL: set density ${density}`);
-    (window as any).__setDensity?.(parseInt(density, 10));
   }
 
   if (fill === '1') {

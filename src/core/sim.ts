@@ -1,8 +1,10 @@
 import Decimal from 'break_infinity.js';
 import { PLANETS } from './config/planets';
 import { WORKERS } from './config/workers';
-import { WORLD_CONFIG } from './config/world';
+import { WORLD_CONFIG, GROW_STAGE_SECONDS, GROW_POP_SECONDS } from './config/world';
 import { incomePerSecond } from './economy';
+import { add, mul } from './money';
+import { updatePlanter } from './ai/planter';
 import type { GameState, Worker, PlanetId } from './state';
 
 const TICK = 0.1;
@@ -18,8 +20,9 @@ export function tick(state: GameState, dt = TICK): void {
   for (const pid of Object.keys(state.planets) as PlanetId[]) {
     tickPlanet(state, pid, dt);
   }
-  state.currencies.starDust = state.currencies.starDust.add(
-    incomePerSecond(state).mul(dt).div(1e9)
+  state.currencies.starDust = add(
+    state.currencies.starDust,
+    mul(incomePerSecond(state), dt / 1e9),
   );
 }
 
@@ -31,9 +34,9 @@ function doSelling(state: GameState): void {
     const price = WORLD_CONFIG.woodPrice * (1 + state.upgrades.woodValue * WORLD_CONFIG.woodValueBoost);
     const earn = woodNum * price;
     planet.resources.wood = new Decimal(0);
-    state.currencies.credits = state.currencies.credits.add(earn);
-    state.stats.woodSold = state.stats.woodSold.add(woodNum);
-    state.stats.lifetimeCredits = state.stats.lifetimeCredits.add(earn);
+    state.currencies.credits = add(state.currencies.credits, earn);
+    state.stats.woodSold = add(state.stats.woodSold, woodNum);
+    state.stats.lifetimeCredits = add(state.stats.lifetimeCredits, earn);
   }
 }
 
@@ -53,12 +56,14 @@ function tickPlots(planet: any, dt: number): void {
       plot.timer -= dt;
       if (plot.timer <= 0) {
         plot.state = 'medium';
-        plot.timer = WORLD_CONFIG.growTimeSmall;
+        plot.timer = GROW_STAGE_SECONDS[1];
+        plot.popTimer = GROW_POP_SECONDS;
       }
     } else if (plot.state === 'medium') {
       plot.timer -= dt;
       if (plot.timer <= 0) {
         plot.state = 'grown';
+        plot.popTimer = GROW_POP_SECONDS;
       }
     } else if (plot.state === 'stump') {
       plot.timer -= dt;
@@ -70,6 +75,9 @@ function tickPlots(planet: any, dt: number): void {
     }
     if (plot.reservedBy !== undefined) {
       plot.timer = Math.max(plot.timer, 0);
+    }
+    if (plot.popTimer) {
+      plot.popTimer = Math.max(0, plot.popTimer - dt);
     }
   }
 }
@@ -90,6 +98,11 @@ function tickWorkers(
         w.state = 'idle';
       }
       w.stuckTimer = 0;
+      continue;
+    }
+    // Planter has its own dedicated AI state machine.
+    if (w.role === 'planter') {
+      updatePlanter(w, planet.plots, state, dt);
       continue;
     }
     w.stuckTimer += dt;
@@ -117,7 +130,7 @@ function tickWorkers(
         handleWander(planet, w, dt);
         break;
     }
-    if (w.stuckTimer > 15 && w.state !== 'dropping') {
+    if (w.stuckTimer > 10 && w.state !== 'dropping') {
       w.state = 'idle';
       w.stuckTimer = 0;
       w.target = undefined;
@@ -212,8 +225,9 @@ function handlePlant(state: GameState, planet: any, _cfg: any, w: Worker, dt: nu
   plot.timer -= dt;
   if (plot.timer <= 0) {
     plot.state = 'sapling';
-    plot.timer = WORLD_CONFIG.growTimeSmall;
+    plot.timer = GROW_STAGE_SECONDS[0];
     plot.reservedBy = undefined;
+    plot.popTimer = GROW_POP_SECONDS;
     w.state = 'idle';
     w.target = undefined;
     w.stuckTimer = 0;
@@ -273,8 +287,8 @@ function handleDeliver(state: GameState, planet: any, w: Worker, _dt: number): v
   state.stats.woodSold = state.stats.woodSold.add(amt);
   const price = WORLD_CONFIG.woodPrice * (1 + state.upgrades.woodValue * WORLD_CONFIG.woodValueBoost);
   const earn = amt * price;
-  state.currencies.credits = state.currencies.credits.add(earn);
-  state.stats.lifetimeCredits = state.stats.lifetimeCredits.add(earn);
+  state.currencies.credits = add(state.currencies.credits, earn);
+  state.stats.lifetimeCredits = add(state.stats.lifetimeCredits, earn);
   w.carrying = undefined;
   w.state = 'idle';
   w.target = undefined;
