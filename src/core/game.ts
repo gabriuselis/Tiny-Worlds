@@ -14,7 +14,7 @@ export interface PlotSeed {
 
 const RESOURCE_KEYS: ResourceId[] = ['wood', 'stone', 'ore', 'crystal', 'planks', 'bricks', 'parts'];
 
-function resetWorkers(g: GameState): void {
+export function resetWorkers(g: GameState): void {
   for (const w of g.planets.verdant.workers) {
     w.state = 'idle';
     w.target = undefined;
@@ -24,6 +24,9 @@ function resetWorkers(g: GameState): void {
     w.chopTimer = undefined;
     w.actionTimer = undefined;
     w.carryingLogs = 0;
+    w.carrying = undefined;
+    w.dropProgress = undefined;
+    w.appearTimer = undefined;
     w.standDir = undefined;
   }
 }
@@ -69,11 +72,11 @@ export function clearPlanet(g: GameState, seeds: PlotSeed[]): number {
  * Reset the SAME game object in place: empty planet, 100 credits, no workers.
  * Object identities of `g` and `g.planets[...]` are preserved on purpose.
  */
-export function resetGame(g: GameState): void {
-  const fresh = initialState();
+export function resetGame(g: GameState, nowMs = 0): void {
+  const fresh = initialState(nowMs);
 
   g.version = fresh.version;
-  g.lastSaved = Date.now();
+  g.lastSaved = nowMs;
   g.currencies.credits = fresh.currencies.credits;
   g.currencies.gems = fresh.currencies.gems;
   g.currencies.starDust = fresh.currencies.starDust;
@@ -151,7 +154,7 @@ export function growAllTrees(g: GameState): number {
 }
 
 /** Dev action: turn up to `count` grown/empty plots into 3-log piles. */
-export function spawnLogPiles(g: GameState, count: number, rng: () => number = Math.random): number {
+export function spawnLogPiles(g: GameState, count: number, rng: () => number): number {
   const candidates = g.planets.verdant.plots.filter((p) => p.state === 'grown' || p.state === 'empty');
   let spawned = 0;
   for (let i = 0; i < count && candidates.length > 0; i++) {

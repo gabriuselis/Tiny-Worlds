@@ -40,6 +40,18 @@ function finite(v: THREE.Vector3): boolean {
   return Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
 }
 
+const BOUNDS_MARGIN = 2;
+const AXIS_Y = new THREE.Vector3(0, 1, 0);
+const AXIS_X = new THREE.Vector3(1, 0, 0);
+
+/** Orthonormal tangent basis (u, v) for a unit direction; `u`/`v` are overwritten. */
+export function tangentBasis(dir: THREE.Vector3, u: THREE.Vector3, v: THREE.Vector3): void {
+  u.crossVectors(AXIS_Y, dir);
+  if (u.lengthSq() < 1e-6) u.crossVectors(AXIS_X, dir);
+  u.normalize();
+  v.crossVectors(dir, u).normalize();
+}
+
 export class ParticleSystem {
   readonly group = new THREE.Group();
   private meshes: Record<ParticleKind, THREE.InstancedMesh>;
@@ -48,15 +60,22 @@ export class ParticleSystem {
   private next = 0;
   private alive = 0;
   private wasAlive = false;
+  private counts: Record<ParticleKind, number> = { chip: 0, bark: 0, leaf: 0, dust: 0 };
+  private geometries: THREE.BufferGeometry[] = [];
   private tmpMatrix = new THREE.Matrix4();
   private tmpScale = new THREE.Vector3();
-  private tmpQuat = new THREE.Quaternion();
   private gravityDir = new THREE.Vector3();
+  private dir = new THREE.Vector3();
+  private tu = new THREE.Vector3();
+  private tv = new THREE.Vector3();
+  private euler = new THREE.Euler();
 
   constructor(parent: THREE.Object3D) {
     const chipGeo = new THREE.TetrahedronGeometry(1, 0);
     const dustGeo = new THREE.BoxGeometry(1, 1, 1);
+    this.geometries.push(chipGeo, dustGeo);
     this.meshes = {} as Record<ParticleKind, THREE.InstancedMesh>;
+    const bounds = new THREE.Sphere(new THREE.Vector3(), PLANET_RADIUS + BOUNDS_MARGIN);
     for (const kind of this.kinds) {
       const geo = kind === 'dust' ? dustGeo : chipGeo;
       const mat = new THREE.MeshStandardMaterial({
@@ -68,17 +87,11 @@ export class ParticleSystem {
       });
       const mesh = new THREE.InstancedMesh(geo, mat, PARTICLE_CAPACITY);
       mesh.name = `particles-${kind}`;
-      mesh.frustumCulled = false;
+      mesh.boundingSphere = bounds.clone();
       mesh.renderOrder = 4;
       this.meshes[kind] = mesh;
+      mesh.count = 0;
       this.group.add(mesh);
-      const hide = new THREE.Matrix4().compose(
-        new THREE.Vector3(0, -999, 0),
-        new THREE.Quaternion(),
-        new THREE.Vector3(0.0001, 0.0001, 0.0001),
-      );
-      for (let i = 0; i < PARTICLE_CAPACITY; i++) mesh.setMatrixAt(i, hide);
-      mesh.instanceMatrix.needsUpdate = true;
     }
     for (let i = 0; i < PARTICLE_CAPACITY; i++) {
       this.pool.push({
@@ -100,16 +113,13 @@ export class ParticleSystem {
    * `plotDir` is a planet-local unit direction (the plot's position on the sphere).
    */
   emit(kind: ParticleKind, plotDir: { x: number; y: number; z: number }, height: number, count: number): void {
-    const dir = new THREE.Vector3(plotDir.x, plotDir.y, plotDir.z);
+    const dir = this.dir.set(plotDir.x, plotDir.y, plotDir.z);
     if (dir.lengthSq() < 1e-10 || !finite(dir)) return;
     dir.normalize();
 
-    // Stable tangent basis for jitter and sideways velocity.
-    const up = new THREE.Vector3(0, 1, 0);
-    const u = new THREE.Vector3().crossVectors(up, dir);
-    if (u.lengthSq() < 1e-6) u.crossVectors(new THREE.Vector3(1, 0, 0), dir);
-    u.normalize();
-    const v = new THREE.Vector3().crossVectors(dir, u).normalize();
+    const u = this.tu;
+    const v = this.tv;
+    tangentBasis(dir, u, v);
 
     const radial = PLANET_RADIUS + height;
     const [minSize, maxSize] = KIND_SIZE[kind];
@@ -135,7 +145,7 @@ export class ParticleSystem {
       p.maxLife = rand(0.5, 0.9);
       p.life = p.maxLife;
       p.size = rand(minSize, maxSize);
-      p.spin.setFromEuler(new THREE.Euler(rand(0, 6.28), rand(0, 6.28), rand(0, 6.28)));
+      p.spin.setFromEuler(this.euler.set(rand(0, 6.28), rand(0, 6.28), rand(0, 6.28)));
       if (!finite(p.pos) || !finite(p.vel)) {
         p.alive = false;
         continue;
@@ -152,7 +162,8 @@ export class ParticleSystem {
       return;
     }
 
-    const counts: Record<ParticleKind, number> = { chip: 0, bark: 0, leaf: 0, dust: 0 };
+    const counts = this.counts;
+    counts.chip = counts.bark = counts.leaf = counts.dust = 0;
     for (const p of this.pool) {
       if (!p.alive) continue;
       p.life -= dt;
@@ -184,40 +195,15 @@ export class ParticleSystem {
 
     for (const kind of this.kinds) {
       const mesh = this.meshes[kind];
-      const hide = new THREE.Matrix4().compose(
-        new THREE.Vector3(0, -999, 0),
-        this.tmpQuat.identity(),
-        this.tmpScale.set(0.0001, 0.0001, 0.0001),
-      );
-      for (let i = counts[kind]; i < Math.min(PARTICLE_CAPACITY, this.lastCount(kind)); i++) {
-        mesh.setMatrixAt(i, hide);
-      }
+      mesh.count = counts[kind];
       mesh.instanceMatrix.needsUpdate = true;
-      this.prevCounts[kind] = counts[kind];
     }
     this.wasAlive = this.alive > 0;
     if (this.alive === 0) this.clearInstances();
   }
 
-  private prevCounts: Record<ParticleKind, number> = { chip: 0, bark: 0, leaf: 0, dust: 0 };
-
-  private lastCount(kind: ParticleKind): number {
-    return this.prevCounts[kind];
-  }
-
   private clearInstances(): void {
-    const hide = new THREE.Matrix4().compose(
-      new THREE.Vector3(0, -999, 0),
-      new THREE.Quaternion(),
-      new THREE.Vector3(0.0001, 0.0001, 0.0001),
-    );
-    for (const kind of this.kinds) {
-      const mesh = this.meshes[kind];
-      const n = Math.max(this.prevCounts[kind], 1);
-      for (let i = 0; i < n; i++) mesh.setMatrixAt(i, hide);
-      mesh.instanceMatrix.needsUpdate = true;
-      this.prevCounts[kind] = 0;
-    }
+    for (const kind of this.kinds) this.meshes[kind].count = 0;
     this.wasAlive = false;
   }
 
@@ -225,6 +211,16 @@ export class ParticleSystem {
     for (const p of this.pool) p.alive = false;
     this.alive = 0;
     this.clearInstances();
+  }
+
+  dispose(): void {
+    this.group.removeFromParent();
+    for (const kind of this.kinds) {
+      const mesh = this.meshes[kind];
+      (mesh.material as THREE.Material).dispose();
+      mesh.dispose();
+    }
+    for (const g of this.geometries) g.dispose();
   }
 
   get aliveCount(): number {

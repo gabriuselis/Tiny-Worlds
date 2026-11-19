@@ -1,4 +1,3 @@
-﻿import * as THREE from 'three';
 import { WORKER_ANIM as A } from '../core/config/worker';
 import type { WorkerModel } from './workerModel';
 
@@ -24,7 +23,7 @@ export function animateWorker(vm: WorkerModel, state: string, dt: number, carry 
   vm.bubble.visible = waiting && vm.role === 'planter';
   vm.carryLogs.visible = carrying && carry > 0;
   if (vm.carryLogs.visible) {
-    for (let i = 0; i < vm.carryLogMeshes.length; i++) vm.carryLogMeshes[i].visible = i < carry;
+    for (let i = 0; i < vm.carryLogNodes.length; i++) vm.carryLogNodes[i].visible = i < carry;
   }
 
   if (run) {
@@ -78,36 +77,22 @@ export function animateWorker(vm: WorkerModel, state: string, dt: number, carry 
   vm.dirt.visible = showDirt;
   if (showDirt) {
     const speed = plant ? 5 : 9;
-    for (let i = 0; i < vm.dirtParticles.length; i++) {
-      const p = vm.dirtParticles[i];
+    for (let i = 0; i < vm.dirtNodes.length; i++) {
+      const p = vm.dirtNodes[i];
       const phase = Math.max(0, Math.sin(t * speed + i * 1.7));
-      const angle = (i / vm.dirtParticles.length) * Math.PI * 2;
+      const angle = (i / vm.dirtNodes.length) * Math.PI * 2;
       p.visible = phase > 0.05;
       p.position.set(
         Math.cos(angle) * 0.03,
         0.006 + phase * (plant ? 0.045 : 0.07),
         0.03 + Math.sin(angle) * 0.02,
       );
-      const mat = p.material as THREE.MeshStandardMaterial;
-      mat.opacity = 0.75 * (1 - phase * 0.6);
+      vm.dirtAlpha[i] = 0.75 * (1 - phase * 0.6);
     }
   }
 }
 
-/** Remove a model from its parent and free its GPU resources. */
+/** Release the model's instance slots; nothing per-worker is held on the GPU. Safe to call twice. */
 export function disposeWorkerModel(vm: WorkerModel): void {
-  vm.group.parent?.remove(vm.group);
-  vm.group.traverse((o) => {
-    const mesh = o as THREE.Mesh;
-    if (mesh.isMesh || (o as THREE.Sprite).isSprite) {
-      mesh.geometry?.dispose();
-      const material = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
-      const mats = Array.isArray(material) ? material : material ? [material] : [];
-      for (const m of mats) {
-        const map = (m as THREE.MeshStandardMaterial).map;
-        if (map) map.dispose();
-        m.dispose();
-      }
-    }
-  });
+  vm.renderer.remove(vm);
 }

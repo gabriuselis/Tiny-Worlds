@@ -2,15 +2,50 @@
 import { initialState, SAVE_VERSION, MIN_SUPPORTED_SAVE_VERSION, type UpgradeId } from './state';
 import { toMoney } from './money';
 import type { GameState } from './state';
+import { captureProgression, PROGRESSION_SCHEMA_VERSION, type ProgressionSnapshot } from './progression';
+import { captureWorld, WORLD_SCHEMA_VERSION, type WorldSnapshot } from './worldSnapshot';
 
-const STORAGE_KEY = 'tiny_worlds_save_v1';
-
-export function serialize(state: GameState): string {
-  const plain: any = JSON.parse(JSON.stringify(state, (_key, value) => {
-    if (value instanceof Decimal) return { __decimal: value.toString() };
+export function serialize(state: unknown): string {
+  // JSON.stringify calls Decimal.toJSON before the replacer runs, so `value` is already a
+  // string here; the untouched original is only reachable through `this[key]`.
+  return JSON.stringify(state, function (this: any, key: string, value: unknown) {
+    const original = this[key];
+    if (original instanceof Decimal) return { __decimal: original.toString() };
     return value;
-  }));
-  return JSON.stringify(plain);
+  });
+}
+
+function revive(_key: string, value: any): unknown {
+  if (value && value.__decimal !== undefined) return new Decimal(value.__decimal);
+  return value;
+}
+
+function asMoney(v: unknown, fallback: Decimal): Decimal {
+  if (v === undefined || v === null) return fallback;
+  try {
+    const d = toMoney(v as number | string | Decimal);
+    return Number.isNaN(d.mantissa) || Number.isNaN(d.exponent) ? fallback : d;
+  } catch {
+    return fallback;
+  }
+}
+
+// Saves written before serialize() was fixed hold Decimals as bare strings.
+function normalizeMoney(merged: GameState, defaults: GameState): void {
+  merged.currencies.credits = asMoney(merged.currencies.credits, defaults.currencies.credits);
+  merged.currencies.starDust = asMoney(merged.currencies.starDust, defaults.currencies.starDust);
+  merged.prestige.starDust = asMoney(merged.prestige.starDust, defaults.prestige.starDust);
+  merged.wood = asMoney(merged.wood, defaults.wood);
+  merged.woodToSell = asMoney(merged.woodToSell, defaults.woodToSell);
+  merged.stats.woodSold = asMoney(merged.stats.woodSold, defaults.stats.woodSold);
+  merged.stats.lifetimeCredits = asMoney(merged.stats.lifetimeCredits, defaults.stats.lifetimeCredits);
+  for (const pid of Object.keys(defaults.planets) as (keyof GameState['planets'])[]) {
+    const resources = merged.planets[pid].resources;
+    const defaultResources = defaults.planets[pid].resources;
+    for (const key of Object.keys(defaultResources) as (keyof typeof defaultResources)[]) {
+      resources[key] = asMoney(resources[key], defaultResources[key]);
+    }
+  }
 }
 
 function isPlainObject(v: any): boolean {
@@ -44,6 +79,7 @@ function deepMerge<T>(defaults: T, loaded: any): T {
 }
 
 const PLOT_STATES = new Set(['empty', 'sapling', 'medium', 'grown', 'falling', 'logs']);
+const WORKER_ROLES = new Set(['planter', 'lumberjack', 'carrier']);
 
 const UPGRADE_KEYS: UpgradeId[] = ['planter', 'lumberjack', 'carrier', 'plantSpeed', 'chopSpeed', 'woodValue', 'tapPower', 'maxTrees'];
 
@@ -73,12 +109,29 @@ function normalizePlots(merged: GameState): void {
   }
 }
 
+function normalizeWorkers(merged: GameState): void {
+  for (const planet of Object.values(merged.planets)) {
+    if (!Array.isArray(planet.workers)) { planet.workers = []; continue; }
+    planet.workers = planet.workers.filter((worker) =>
+      worker && WORKER_ROLES.has(worker.role) && Number.isFinite(worker.id) &&
+      worker.pos && Number.isFinite(worker.pos.x) &&
+      Number.isFinite(worker.pos.y) && Number.isFinite(worker.pos.z));
+    for (const worker of planet.workers) {
+      worker.level = Number.isFinite(worker.level) ? worker.level : 0;
+      worker.stuckTimer = Number.isFinite(worker.stuckTimer) ? worker.stuckTimer : 0;
+      worker.stateTimer = Number.isFinite(worker.stateTimer) ? worker.stateTimer : 0;
+      worker.carryingLogs = Number.isFinite(worker.carryingLogs) ? worker.carryingLogs : 0;
+      worker.name = typeof worker.name === 'string' ? worker.name : worker.role;
+      if (!worker.cosmetic || typeof worker.cosmetic !== 'object') {
+        worker.cosmetic = { hat: 'cap', color: '#ffffff' };
+      }
+    }
+  }
+}
+
 export function deserialize(json: string): GameState | null {
   try {
-    const raw = JSON.parse(json, (_key, value) => {
-      if (value && value.__decimal !== undefined) return new Decimal(value.__decimal);
-      return value;
-    });
+    const raw = JSON.parse(json, revive);
 
     // Version check: discard old saves
     if (!raw || raw.version === undefined || raw.version < MIN_SUPPORTED_SAVE_VERSION) {
@@ -88,15 +141,14 @@ export function deserialize(json: string): GameState | null {
     // Deep-merge loaded data over defaults so missing arrays/fields get defaults
     const defaults = initialState();
     const merged = deepMerge(defaults, raw) as GameState;
-    // Normalize credits to a Decimal (Money) so .gte() etc. never crash on plain-number saves
-    merged.currencies.credits = toMoney(merged.currencies.credits);
-    merged.wood = toMoney(merged.wood);
-    merged.woodToSell = toMoney(merged.woodToSell);
+    normalizeMoney(merged, defaults);
+    merged.lastSaved = Number.isFinite(merged.lastSaved) ? merged.lastSaved : defaults.lastSaved;
     merged.simSeconds = Number.isFinite(merged.simSeconds) ? merged.simSeconds : 0;
     merged.woodLogTimes = Array.isArray(merged.woodLogTimes)
       ? merged.woodLogTimes.filter((t) => typeof t === 'number' && Number.isFinite(t))
       : [];
-normalizePlots(merged);
+    normalizePlots(merged);
+    normalizeWorkers(merged);
     normalizeUpgrades(merged);
     merged.version = SAVE_VERSION;
     return merged;
@@ -105,26 +157,54 @@ normalizePlots(merged);
   }
 }
 
-export function save(state: GameState): void {
+/** All snapshot migrations and validation stay beside the legacy save migration. */
+export function deserializeProgression(json: string): ProgressionSnapshot | null {
   try {
-    state.version = SAVE_VERSION;
-    localStorage.setItem(STORAGE_KEY, serialize(state));
-  } catch {}
-}
-
-export function load(): GameState | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    return deserialize(raw);
+    const raw = JSON.parse(json, revive);
+    if (raw?.schemaVersion !== PROGRESSION_SCHEMA_VERSION ||
+        !Number.isSafeInteger(raw.revision) || raw.revision < 0 ||
+        !Number.isFinite(raw.updatedAt)) return null;
+    const planets = Object.fromEntries(Object.entries(raw.planets ?? {}).map(([pid, value]) => {
+      const p = value as any;
+      return [pid, { ...p, workers: Array.isArray(p?.workers) ? p.workers.map((w: any) => ({
+        ...w, pos: { x: 0, y: 1, z: 0 }, state: 'idle', stuckTimer: 0,
+      })) : [] }];
+    }));
+    const state = deserialize(serialize({ ...raw, version: SAVE_VERSION, planets }));
+    return state ? captureProgression(state, raw.revision, raw.updatedAt) : null;
   } catch {
-    try { localStorage.removeItem(STORAGE_KEY); } catch {}
     return null;
   }
 }
 
-export function clearSave(): void {
-  try { localStorage.removeItem(STORAGE_KEY); } catch {}
+export function deserializeWorld(json: string): WorldSnapshot | null {
+  try {
+    const raw = JSON.parse(json);
+    if (raw?.schemaVersion !== WORLD_SCHEMA_VERSION) return null;
+    const planets = Object.fromEntries(Object.entries(raw.planets ?? {}).map(([pid, value]) => {
+      const p = value as any;
+      return [pid, { plots: Array.isArray(p?.plots) && p.plots.every((plot: any) =>
+        plot && Number.isFinite(plot.id) && plot.dir &&
+        Number.isFinite(plot.dir.x) && Number.isFinite(plot.dir.y) && Number.isFinite(plot.dir.z))
+        ? p.plots : [] }];
+    }));
+    const state = deserialize(serialize({ version: SAVE_VERSION, planets }));
+    if (!state) return null;
+    const world = captureWorld(state);
+    world.lastSaved = Number.isFinite(raw.lastSaved) ? raw.lastSaved : 0;
+    world.simSeconds = Number.isFinite(raw.simSeconds) ? raw.simSeconds : 0;
+    world.woodLogTimes = Array.isArray(raw.woodLogTimes)
+      ? raw.woodLogTimes.filter((t: unknown) => Number.isFinite(t)) : [];
+    for (const pid of Object.keys(world.planets) as (keyof WorldSnapshot['planets'])[]) {
+      const entries = raw.planets?.[pid]?.positions;
+      world.planets[pid].positions = Array.isArray(entries) ? entries.filter((entry: any) =>
+        Number.isFinite(entry?.id) && entry.pos &&
+        Number.isFinite(entry.pos.x) && Number.isFinite(entry.pos.y) && Number.isFinite(entry.pos.z)) : [];
+    }
+    return world;
+  } catch {
+    return null;
+  }
 }
 
 export function exportSave(state: GameState): string {

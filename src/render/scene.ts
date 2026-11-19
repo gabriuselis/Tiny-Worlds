@@ -7,21 +7,24 @@ export interface SceneAPI {
   resize: () => void;
   render: () => void;
   add: (obj: THREE.Object3D) => void;
+  start: (cb: (timeMs: number) => void) => void;
+  stop: () => void;
+  dispose: () => void;
 }
 
 const STAR_COUNT = 1200;
 
 export function createScene(canvas: HTMLCanvasElement): SceneAPI {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+  renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.NoToneMapping;
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0b1020);
 
-  const camera = new THREE.PerspectiveCamera(45, canvas.clientWidth / canvas.clientHeight, 0.05, 2000);
+  const camera = new THREE.PerspectiveCamera(45, canvas.clientWidth / Math.max(1, canvas.clientHeight) || 1, 0.05, 2000);
   camera.position.set(0, 0, 10);
 
   // Hemisphere light: sky white / ground green (kept low so crowns stay green at the limb)
@@ -57,11 +60,28 @@ export function createScene(canvas: HTMLCanvasElement): SceneAPI {
   function resize() {
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
+    if (width === 0 || height === 0) return;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(width, height, false);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
-    renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   }
+
+  const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => resize()) : null;
+  observer?.observe(canvas);
+
+  let dprQuery: MediaQueryList | null = null;
+  const onPixelRatioChange = () => {
+    resize();
+    watchPixelRatio();
+  };
+  function watchPixelRatio() {
+    dprQuery?.removeEventListener('change', onPixelRatioChange);
+    if (typeof matchMedia === 'undefined') return;
+    dprQuery = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    dprQuery.addEventListener('change', onPixelRatioChange, { once: true });
+  }
+  watchPixelRatio();
 
   function render() {
     renderer.render(scene, camera);
@@ -71,5 +91,23 @@ export function createScene(canvas: HTMLCanvasElement): SceneAPI {
     scene.add(obj);
   }
 
-  return { renderer, camera, scene, resize, render, add };
+  function start(cb: (timeMs: number) => void) {
+    renderer.setAnimationLoop(cb);
+  }
+
+  function stop() {
+    renderer.setAnimationLoop(null);
+  }
+
+  function dispose() {
+    stop();
+    observer?.disconnect();
+    dprQuery?.removeEventListener('change', onPixelRatioChange);
+    scene.remove(stars);
+    starGeo.dispose();
+    starMat.dispose();
+    renderer.dispose();
+  }
+
+  return { renderer, camera, scene, resize, render, add, start, stop, dispose };
 }

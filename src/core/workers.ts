@@ -3,13 +3,7 @@ import { WORKER_IDLE_SECONDS, WORKER_APPEAR_SECONDS, shirtColorFor } from './con
 import { PLANET_RADIUS } from './config/world';
 import { gte, sub } from './money';
 import type { GameState, Role, Vec3, Worker } from './state';
-
-// Monotonic id source: keeps two hires in the same millisecond from colliding.
-let idSeq = Date.now();
-function nextWorkerId(): number {
-  idSeq += 1;
-  return idSeq;
-}
+import type { IdGenerator } from './ports';
 
 function normalize(v: Vec3): Vec3 {
   const len = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z) || 1;
@@ -29,7 +23,7 @@ const HAT_BY_ROLE: Record<string, string> = {
 export function hireWorker(
   state: GameState,
   role: Role,
-  opts: { free?: boolean; spawnDir?: Vec3 } = {},
+  opts: { free?: boolean; spawnDir?: Vec3; ids?: IdGenerator } = {},
 ): Worker | undefined {
   const planet = state.planets.verdant;
   const existing = planet.workers.filter((w) => w.role === role).length;
@@ -42,8 +36,10 @@ export function hireWorker(
 
   const dir = normalize(opts.spawnDir ?? { x: 0, y: 0, z: 1 });
   const color = `#${shirtColorFor(role).toString(16).padStart(6, '0')}`;
+  const highestId = Object.values(state.planets).reduce((highest, p) =>
+    p.workers.reduce((n, worker) => Math.max(n, worker.id), highest), 0);
   const worker: Worker = {
-    id: nextWorkerId(),
+    id: Math.max(opts.ids?.next() ?? 0, highestId + 1),
     role,
     pos: { x: dir.x * PLANET_RADIUS, y: dir.y * PLANET_RADIUS, z: dir.z * PLANET_RADIUS },
     state: 'idle',
