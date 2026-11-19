@@ -91,7 +91,7 @@ export function installTreeToolHooks(): void {
   (window as any).__fillTrees = () => {
     try {
       const state = ctx.state;
-      const n = fillPlanet(state, ctx.grid.plots);
+      const n = ctx.progression.devChange((game) => fillPlanet(game, ctx.grid.plots));
       syncTrees();
       syncWorkers();
       const counts = countPlotStates(state);
@@ -117,7 +117,7 @@ export function installTreeToolHooks(): void {
   (window as any).__clearTrees = () => {
     try {
       const state = ctx.state;
-      clearPlanet(state, ctx.grid.plots);
+      ctx.progression.devChange((game) => clearPlanet(game, ctx.grid.plots));
       syncTrees();
       syncWorkers();
       const counts = countPlotStates(state);
@@ -138,7 +138,7 @@ export function installTreeToolHooks(): void {
   // Grow every planted tree instantly (dev)
   (window as any).__growAllTrees = () => {
     try {
-      const n = growAllTrees(ctx.state);
+      const n = ctx.progression.devChange((game) => growAllTrees(game));
       logEvent(`__growAllTrees: ${n} trees grown`);
       showToast(`Grew ${n} trees`);
       ctx.uiNeedsUpdate = true;
@@ -152,7 +152,7 @@ export function installTreeToolHooks(): void {
   // Spawn 10 random 3-log piles so the lumberjack/carrier chain can be inspected (dev)
   (window as any).__spawnLogPiles = (count = 10) => {
     try {
-      const n = spawnLogPiles(ctx.state, count);
+      const n = ctx.progression.devChange((game) => spawnLogPiles(game, count, Math.random));
       syncTrees();
       logEvent(`__spawnLogPiles: ${n} piles, ${logsWaiting(ctx.state)} logs waiting`);
       showToast(`${n} log piles spawned`);

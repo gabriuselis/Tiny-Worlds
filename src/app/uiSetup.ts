@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import Decimal from 'break_infinity.js';
 import { upgradeCost } from '../core/config/upgrades';
-import { buyUpgrade } from '../core/game';
 import { gte, format } from '../core/money';
 import type { Role, UpgradeId } from '../core/state';
 import { UI, showToast } from '../ui/ui';
@@ -20,7 +19,7 @@ export function initUi(): void {
 
     ui.setUpgradeHandler((id: UpgradeId) => {
       try {
-        const ok = buyUpgrade(state, id);
+        const ok = ctx.progression.upgrade(id);
         if (!ok) {
           const level = state.upgrades[id];
           const cost = upgradeCost(id, level);
@@ -66,7 +65,7 @@ export function initUi(): void {
           if (role) {
             addWorker(target as Role);
           } else {
-            buyUpgrade(state, target);
+            ctx.progression.upgrade(target);
           }
           ctx.uiNeedsUpdate = true;
         } catch (err) { showError('quick buy failed', err); }

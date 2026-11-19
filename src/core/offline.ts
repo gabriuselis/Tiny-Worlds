@@ -22,8 +22,8 @@ export function calculateOffline(state: GameState, nowMs: number): OfflineResult
   return { creditsGained: gained, secondsOffline: seconds, capped };
 }
 
-export function applyOffline(state: GameState, result: OfflineResult): GameState {
+export function applyOffline(state: GameState, result: OfflineResult, nowMs: number): GameState {
   state.currencies.credits = add(state.currencies.credits, result.creditsGained);
-  state.lastSaved = Date.now();
+  state.lastSaved = nowMs;
   return state;
 }

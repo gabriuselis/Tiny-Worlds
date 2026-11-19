@@ -86,15 +86,15 @@ describe('income', () => {
 
 describe('offline progress', () => {
   it('calculates credits gained over time', () => {
-    const s = initialState();
-    const res = calculateOffline(s, Date.now() + 3600 * 1000);
+    const s = initialState(1000);
+    const res = calculateOffline(s, 1000 + 3600 * 1000);
     expect(res.creditsGained.gte(0)).toBe(true);
     expect(res.secondsOffline).toBeCloseTo(3600, -1);
   });
 
   it('caps offline time at 8 hours', () => {
-    const s = initialState();
-    const res = calculateOffline(s, Date.now() + 24 * 3600 * 1000);
+    const s = initialState(1000);
+    const res = calculateOffline(s, 1000 + 24 * 3600 * 1000);
     expect(res.capped).toBe(true);
     expect(res.secondsOffline).toBeLessThanOrEqual(8 * 3600);
   });

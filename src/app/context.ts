@@ -4,6 +4,8 @@ import type { SceneAPI } from '../render/scene';
 import type { ParticleSystem } from '../render/particles';
 import type { FloatingTextPool } from '../render/floaters';
 import type { UI } from '../ui/ui';
+import type { LayeredProgressionStore } from '../persistence/layeredStore';
+import type { Progression } from './progression';
 import { planetRadius } from './constants';
 
 type Verdant = GameState['planets']['verdant'];
@@ -19,6 +21,8 @@ export interface AppContext {
   surfaceRadius: number;
   grid: any;
   state: GameState;
+  progressionStore: LayeredProgressionStore;
+  progression: Progression;
   verdant: Verdant;
   particles: ParticleSystem | null;
   floaters: FloatingTextPool | null;

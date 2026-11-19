@@ -1,11 +1,10 @@
 import * as THREE from 'three';
 import { initialState } from '../core/state';
 import { tick } from '../core/sim';
-import { clearSave } from '../core/save';
 import { plantSpeedMult, chopSpeedMult, woodValueMult, UPGRADES } from '../core/config/upgrades';
 import { hireWorker } from '../core/workers';
 import { add, format } from '../core/money';
-import { seedEmptyPlots, resetGame, countPlotStates, logsWaiting } from '../core/game';
+import { seedEmptyPlots, countPlotStates, logsWaiting } from '../core/game';
 import type { Role, UpgradeId } from '../core/state';
 import { disposeWorkerModel } from '../render/worker';
 import { logEvent, showToast } from '../ui/ui';
@@ -28,9 +27,7 @@ function resetGameHook(force?: boolean): void {
   if (confirmed) {
     try {
       resetConfirmTime = 0;
-      clearSave();
-      resetGame(state); // in place: no new object, no stale aliases
-      seedEmptyPlots(state, grid.plots); // full empty grid => planters have targets
+      ctx.progression.reset(grid.plots, Date.now());
 
       for (const vm of workerVisuals.values()) {
         try { disposeWorkerModel(vm); } catch { /* ignore */ }
@@ -70,8 +67,9 @@ export function installGameToolHooks(): void {
 
   // Add credits (dev)
   (window as any).__addCredits = (amt: number) => {
-    const state = ctx.state;
-    state.currencies.credits = add(state.currencies.credits, amt);
+    ctx.progression.devChange((game) => {
+      game.currencies.credits = add(game.currencies.credits, amt);
+    });
     ctx.uiNeedsUpdate = true;
     logEvent(`__addCredits: +${amt}`);
   };
@@ -80,8 +78,10 @@ export function installGameToolHooks(): void {
   (window as any).__addWood = (amt = 10) => {
     try {
       const state = ctx.state;
-      state.wood = add(state.wood, amt);
-      state.woodToSell = add(state.woodToSell, amt);
+      ctx.progression.devChange((game) => {
+        game.wood = add(game.wood, amt);
+        game.woodToSell = add(game.woodToSell, amt);
+      });
       ctx.ui.bumpWood();
       ctx.uiNeedsUpdate = true;
       showToast(`+${amt} wood`);
@@ -123,12 +123,13 @@ export function installGameToolHooks(): void {
   // Dev: +1 to every upgrade level (skips max), costs nothing.
   (window as any).__upgradeAllPlus1 = () => {
     try {
-      const state = ctx.state;
-      for (const id of ['plantSpeed', 'chopSpeed', 'woodValue', 'tapPower', 'maxTrees'] as const) {
-        const max = (UPGRADES[id] as any).maxLevel;
-        if (max !== undefined && state.upgrades[id] >= max) continue;
-        state.upgrades[id] += 1;
-      }
+      ctx.progression.devChange((game) => {
+        for (const id of ['plantSpeed', 'chopSpeed', 'woodValue', 'tapPower', 'maxTrees'] as const) {
+          const max = (UPGRADES[id] as any).maxLevel;
+          if (max !== undefined && game.upgrades[id] >= max) continue;
+          game.upgrades[id] += 1;
+        }
+      });
       ctx.uiNeedsUpdate = true;
       showToast('Upgrades +1 all');
       logEvent('__upgradeAllPlus1');
@@ -138,10 +139,11 @@ export function installGameToolHooks(): void {
   // Dev: reset upgrade levels to 0.
   (window as any).__upgradeReset = () => {
     try {
-      const state = ctx.state;
-      for (const id of Object.keys(state.upgrades) as UpgradeId[]) {
-        state.upgrades[id] = 0;
-      }
+      ctx.progression.devChange((game) => {
+        for (const id of Object.keys(game.upgrades) as UpgradeId[]) {
+          game.upgrades[id] = 0;
+        }
+      });
       ctx.uiNeedsUpdate = true;
       showToast('Upgrades reset');
       logEvent('__upgradeReset');

@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { WORKER_SCALE, WORKER_APPEAR_SECONDS, WORKER_POOL } from '../core/config/worker';
-import { hireWorker } from '../core/workers';
 import { sweepReservations } from '../core/game';
 import type { Role, Plot } from '../core/state';
 import {
@@ -69,7 +68,7 @@ function pickSpawnDir(): { x: number; y: number; z: number } {
 export function addWorker(role: Role, free = false) {
   try {
     const spawnDir = pickSpawnDir();
-    const worker = hireWorker(ctx.state, role, { free, spawnDir });
+    const worker = ctx.progression.hire(role, free, spawnDir);
     if (!worker) {
       showToast(`Not enough credits for ${role}`);
       return;

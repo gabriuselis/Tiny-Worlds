@@ -1,4 +1,3 @@
-import { save } from '../core/save';
 import { openDevDialog as openDevMenu } from '../ui/ui';
 import { ctx } from './context';
 import { updateViewport } from './camera';
@@ -29,7 +28,7 @@ export function installEvents(): void {
   window.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       ctx.isPaused = true;
-      try { save(ctx.state); } catch { /* save may fail if state is undefined */ }
+      try { ctx.progressionStore.saveCurrent(); void ctx.progressionStore.flushRemote(); } catch { /* save may fail if state is undefined */ }
     } else {
       ctx.isPaused = false;
       ctx.lastTime = performance.now(); // reset to avoid huge dt on return
@@ -43,7 +42,7 @@ export function installEvents(): void {
     try { sessionStorage.setItem('tw_last_pagehide', String(Date.now())); } catch { /* ignore */ }
     if (e.persisted) {
       // Page may be restored from the back/forward cache: keep resources, just pause.
-      try { save(ctx.state); } catch { /* ignore */ }
+      try { ctx.progressionStore.saveCurrent(); void ctx.progressionStore.flushRemote(); } catch { /* ignore */ }
       stopLoop();
     } else {
       shutdownApp();

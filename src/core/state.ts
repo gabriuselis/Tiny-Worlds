@@ -121,11 +121,11 @@ export interface GameState {
 export const SAVE_VERSION = 4;
 export const MIN_SUPPORTED_SAVE_VERSION = 3;
 
-export function initialState(): GameState {
+export function initialState(nowMs = 0): GameState {
   const zero = new Decimal(0);
   return {
     version: SAVE_VERSION,
-    lastSaved: Date.now(),
+    lastSaved: nowMs,
     currencies: { credits: toMoney(100), gems: 0, starDust: zero },
     wood: zero,
     woodToSell: zero,

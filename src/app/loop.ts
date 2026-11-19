@@ -1,5 +1,3 @@
-import { tick } from '../core/sim';
-import { save } from '../core/save';
 import { uiFrozen } from '../ui/ui';
 import { ctx } from './context';
 import {
@@ -30,7 +28,7 @@ function stepSim(): void {
   // while the fixed sim step stays DT (0.1 s).
   ctx.accumulator += frameDt * ctx.gameSpeedMult;
   const steps = Math.min(Math.floor(ctx.accumulator / DT), MAX_SIM_STEPS_PER_FRAME);
-  for (let i = 0; i < steps; i++) tick(ctx.state, DT);
+  for (let i = 0; i < steps; i++) ctx.progression.advance(DT);
   ctx.accumulator -= steps * DT;
 }
 
@@ -73,7 +71,7 @@ function stepUi(): void {
 function stepAutosave(): void {
   if (frameNow - lastSave > AUTOSAVE_INTERVAL_MS) {
     lastSave = frameNow;
-    save(ctx.state);
+    ctx.progressionStore.saveCurrent();
   }
 }
 
@@ -115,7 +113,7 @@ export function stopLoop(): void {
 
 // Final save first, then stop the loop and release GPU/DOM/listener resources.
 export function shutdownApp(): void {
-  guard('shutdown.save', () => save(ctx.state));
+  guard('shutdown.save', () => { ctx.progressionStore.saveCurrent(); void ctx.progressionStore.flushRemote(); });
   stopLoop();
   guard('shutdown.gestures', () => ctx.updateGestures?.dispose?.());
   guard('shutdown.particles', () => ctx.particles?.dispose());
