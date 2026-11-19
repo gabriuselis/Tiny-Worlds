@@ -148,3 +148,13 @@ export const WORKER_COLORS = {
 export function shirtColorFor(role: string): number {
   return (WORKER_COLORS as Record<string, number>)[role] ?? WORKER_COLORS.planter;
 }
+
+// ----- Instanced rendering -----
+export const WORKER_POOL = {
+  initialCapacity: 32, // workers per instanced pool before it grows
+  growthFactor: 2,
+  boundsMargin: 1, // added to the planet radius for the pools' manual bounding sphere
+  worldBoundsRadius: 60, // bounding sphere for pools parented to the scene root (dev test worker)
+  hiddenScale: 1e-6, // collapses an instance that should not be drawn
+  bubbleSize: 0.09,
+} as const;

@@ -25,6 +25,19 @@ export function setupGestures(o: Opts) {
   const X = new Vector3(1, 0, 0), Y = new Vector3(0, 1, 0);
   const q = new Quaternion();
 
+  let devMenu: HTMLElement | null = null;
+  const devMenuOpen = () => {
+    if (!devMenu || !devMenu.isConnected) devMenu = document.getElementById('dev-menu');
+    return !!devMenu && devMenu.hasAttribute('open');
+  };
+
+  const pinchDistance = () => {
+    const it = pointers.values();
+    const a = it.next().value;
+    const b = it.next().value;
+    return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
+  };
+
   const getMinDist = () => o.minDist;
   const getMaxDist = () => o.maxDist;
 
@@ -56,8 +69,7 @@ export function setupGestures(o: Opts) {
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     lastInput = performance.now(); vx = vy = 0;
     if (pointers.size === 2) {
-      const [a, b] = [...pointers.values()];
-      pinchPrev = Math.hypot(a.x - b.x, a.y - b.y);
+      pinchPrev = pinchDistance();
     }
     // double tap reset
     const now = performance.now();
@@ -76,8 +88,7 @@ export function setupGestures(o: Opts) {
       rotate(dx, dy); vx = dx; vy = dy;
     } else if (pointers.size === 2) {
       p.x = e.clientX; p.y = e.clientY;
-      const [a, b] = [...pointers.values()];
-      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      const d = pinchDistance();
       if (pinchPrev > 0) {
         const scale = pinchPrev / d; // spread apart -> dist decreases -> zoom in
         setDist(dist * scale);
@@ -124,7 +135,7 @@ export function setupGestures(o: Opts) {
   return {
     update: () => {
       // Ignore gestures when the dev menu is open
-      if (document.getElementById('dev-menu')?.hasAttribute('open')) return;
+      if (devMenuOpen()) return;
       frames++;
       dist += (targetDist - dist) * 0.2;
       const dAbove = distAboveSurface();
@@ -135,6 +146,18 @@ export function setupGestures(o: Opts) {
         else if (performance.now() - lastInput > 3000) rotate(0.4, 0);
       }
       o.debug?.(`frame ${frames} | ptrs ${pointers.size} | ev ${lastEvent} | dist ${dist.toFixed(2)} | above ${dAbove.toFixed(2)} | min ${getMinDist().toFixed(2)} | max ${getMaxDist().toFixed(2)}`);
+    },
+    dispose: () => {
+      window.removeEventListener('pointerdown', down, true);
+      window.removeEventListener('pointermove', move, true);
+      window.removeEventListener('pointerup', up, true);
+      window.removeEventListener('pointercancel', up, true);
+      window.removeEventListener('wheel', wheel, true);
+      document.removeEventListener('touchmove', block);
+      window.removeEventListener('gesturestart', igstart);
+      window.removeEventListener('gesturechange', igchange);
+      window.removeEventListener('gestureend', igend);
+      pointers.clear();
     },
     setDist,
     getDist: () => dist,

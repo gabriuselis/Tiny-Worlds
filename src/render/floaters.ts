@@ -44,10 +44,10 @@ export class FloatingTextPool {
   }
 
   update(dt: number): void {
-    let any = false;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
     for (const f of this.items) {
       if (!f.active) continue;
-      any = true;
       f.age += dt;
       if (f.age >= f.duration) {
         f.active = false;
@@ -60,15 +60,19 @@ export class FloatingTextPool {
         continue;
       }
       f.el.style.display = 'block';
-      const x = (this.tmp.x * 0.5 + 0.5) * window.innerWidth;
+      const x = (this.tmp.x * 0.5 + 0.5) * vw;
       const rise = (f.age / f.duration) * 42;
-      const y = (-this.tmp.y * 0.5 + 0.5) * window.innerHeight - rise;
+      const y = (-this.tmp.y * 0.5 + 0.5) * vh - rise;
       const fade = f.age > f.duration * 0.6 ? 1 - (f.age - f.duration * 0.6) / (f.duration * 0.4) : 1;
       f.el.style.left = `${x.toFixed(1)}px`;
       f.el.style.top = `${y.toFixed(1)}px`;
       f.el.style.opacity = fade.toFixed(2);
     }
-    if (!any) return;
+  }
+
+  dispose(): void {
+    for (const f of this.items) f.el.remove();
+    this.items.length = 0;
   }
 
   clear(): void {

@@ -6,11 +6,41 @@ import type { GameState } from './state';
 const STORAGE_KEY = 'tiny_worlds_save_v1';
 
 export function serialize(state: GameState): string {
-  const plain: any = JSON.parse(JSON.stringify(state, (_key, value) => {
-    if (value instanceof Decimal) return { __decimal: value.toString() };
+  // JSON.stringify calls Decimal.toJSON before the replacer runs, so `value` is already a
+  // string here; the untouched original is only reachable through `this[key]`.
+  return JSON.stringify(state, function (this: any, key: string, value: unknown) {
+    const original = this[key];
+    if (original instanceof Decimal) return { __decimal: original.toString() };
     return value;
-  }));
-  return JSON.stringify(plain);
+  });
+}
+
+function asMoney(v: unknown, fallback: Decimal): Decimal {
+  if (v === undefined || v === null) return fallback;
+  try {
+    const d = toMoney(v as number | string | Decimal);
+    return Number.isNaN(d.mantissa) || Number.isNaN(d.exponent) ? fallback : d;
+  } catch {
+    return fallback;
+  }
+}
+
+// Saves written before serialize() was fixed hold Decimals as bare strings.
+function normalizeMoney(merged: GameState, defaults: GameState): void {
+  merged.currencies.credits = asMoney(merged.currencies.credits, defaults.currencies.credits);
+  merged.currencies.starDust = asMoney(merged.currencies.starDust, defaults.currencies.starDust);
+  merged.prestige.starDust = asMoney(merged.prestige.starDust, defaults.prestige.starDust);
+  merged.wood = asMoney(merged.wood, defaults.wood);
+  merged.woodToSell = asMoney(merged.woodToSell, defaults.woodToSell);
+  merged.stats.woodSold = asMoney(merged.stats.woodSold, defaults.stats.woodSold);
+  merged.stats.lifetimeCredits = asMoney(merged.stats.lifetimeCredits, defaults.stats.lifetimeCredits);
+  for (const pid of Object.keys(defaults.planets) as (keyof GameState['planets'])[]) {
+    const resources = merged.planets[pid].resources;
+    const defaultResources = defaults.planets[pid].resources;
+    for (const key of Object.keys(defaultResources) as (keyof typeof defaultResources)[]) {
+      resources[key] = asMoney(resources[key], defaultResources[key]);
+    }
+  }
 }
 
 function isPlainObject(v: any): boolean {
@@ -88,10 +118,7 @@ export function deserialize(json: string): GameState | null {
     // Deep-merge loaded data over defaults so missing arrays/fields get defaults
     const defaults = initialState();
     const merged = deepMerge(defaults, raw) as GameState;
-    // Normalize credits to a Decimal (Money) so .gte() etc. never crash on plain-number saves
-    merged.currencies.credits = toMoney(merged.currencies.credits);
-    merged.wood = toMoney(merged.wood);
-    merged.woodToSell = toMoney(merged.woodToSell);
+    normalizeMoney(merged, defaults);
     merged.simSeconds = Number.isFinite(merged.simSeconds) ? merged.simSeconds : 0;
     merged.woodLogTimes = Array.isArray(merged.woodLogTimes)
       ? merged.woodLogTimes.filter((t) => typeof t === 'number' && Number.isFinite(t))
