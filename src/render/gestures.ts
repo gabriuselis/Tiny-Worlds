@@ -3,6 +3,7 @@ import { WORLD_CONFIG, TAP_CAMERA_FACING_DOT, GROW_POP_SECONDS } from '../core/c
 import { collectPileByPlayer } from '../core/wood';
 import type { GameState, Plot } from '../core/state';
 import { pickNearestPile, isTapGesture, TAP_MOVE_TOLERANCE_PX, type ScreenPile } from './tapPick';
+import { cameraDirInPlanetSpace } from './planetSpace';
 
 interface Opts {
   planet: Object3D;
@@ -87,7 +88,10 @@ export function setupGestures(o: Opts) {
 
     const camera = o.camera;
     viewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    cameraDir.set(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
+    // Camera direction in planet-LOCAL space: the planet group rotates
+    // (gestures.ts rotate), so plot.dir (local) must be compared against a
+    // local camera direction, not the world-space camera forward vector.
+    cameraDirInPlanetSpace(camera.position, o.planet.quaternion, cameraDir);
     const planetMatrix = o.planet.matrixWorld;
 
     candidates.length = 0;

@@ -656,6 +656,7 @@ let elDevPlotCount: HTMLDivElement | null = null;
 let elDevFps: HTMLDivElement | null = null;
 let elDevCoverage: HTMLDivElement | null = null;
 let elDevCoverageDetail: HTMLDivElement | null = null;
+let elDevFacingCount: HTMLDivElement | null = null;
 let elDevResults: HTMLDivElement | null = null;
 let devMenuOpen = false;
 let devMenuOpenTime = 0;
@@ -716,14 +717,15 @@ function createDevMenu(): void {
       <button type="button" class="dev-btn" id="dev-plot-dots">Plot dots</button>
       <button type="button" class="dev-btn" id="dev-workers-debug">Workers debug</button>
     </div>
-    <div class="dev-menu-section">
-      <div class="dev-subtitle">Trees &amp; wood</div>
+<div class="dev-menu-section">
+      <div class="dev-subtitle">Trees & wood</div>
       <button type="button" class="dev-btn" id="dev-grow-all">Grow all trees</button>
       <button type="button" class="dev-btn" id="dev-spawn-piles">Spawn 10 log piles</button>
       <button type="button" class="dev-btn" id="dev-add-wood">+10 wood</button>
       <button type="button" class="dev-btn" id="dev-test-particles">Emit test particles</button>
       <button type="button" class="dev-btn" id="dev-wood-test">Run wood self-test</button>
       <button type="button" class="dev-btn" id="dev-tap-test">Tap collect self-test</button>
+      <button type="button" class="dev-btn" id="dev-debug-piles">Debug piles</button>
     </div>
     <div class="dev-menu-section">
       <div class="dev-subtitle">Display</div>
@@ -746,6 +748,7 @@ function createDevMenu(): void {
     <div class="dev-stat" id="dev-plot-count">Plots: --</div>
     <div class="dev-stat" id="dev-fps">FPS: --</div>
     <div class="dev-stat" id="dev-coverage">Coverage: --</div>
+    <div class="dev-stat" id="dev-facing-count">Facing count: --</div>
     <button type="button" class="dev-close" id="dev-close-bottom" title="Close">Close</button>
   </div>
 </div>
@@ -758,6 +761,7 @@ function createDevMenu(): void {
   elDevCoverage = menu.querySelector('#dev-coverage')!;
   elDevCoverageDetail = menu.querySelector('#dev-coverage-detail')!;
   elDevResults = menu.querySelector('#dev-self-results')!;
+  elDevFacingCount = menu.querySelector('#dev-facing-count')!;
 
   menu.addEventListener('pointerup', onDevMenuEvent, true);
   menu.addEventListener('click', onDevMenuEvent, true);
@@ -827,6 +831,7 @@ const actions: { [id: string]: () => void } = {
     'dev-test-particles': () => (window as any).__emitTestParticles?.(),
     'dev-wood-test': () => (window as any).__runWoodSelfTest?.(),
     'dev-tap-test': () => (window as any).__runTapCollectSelfTest?.(),
+    'dev-debug-piles': () => (window as any).__debugPiles?.(),
     'dev-toggle-fps': () => (window as any).__toggleFps?.(),
     'dev-toggle-log': () => (window as any).__toggleLog?.(),
     'dev-self-test': runSelfTest,
@@ -896,6 +901,11 @@ function updateDevStats(plotCount?: number, fps?: number): void {
   }
   if (elDevCoverageDetail && (window as any).__getCoverageStats) {
     elDevCoverageDetail.textContent = (window as any).__getCoverageStats();
+  }
+  // Facing count (temporary dev line): log plots passing the tap facing test
+  if (elDevFacingCount && (window as any).__facingCount) {
+    const c = (window as any).__facingCount();
+    if (c !== null && c !== undefined) elDevFacingCount.textContent = `Facing count: ${c}`;
   }
   // Upgrade multiplier line (dev menu)
   const elMult = document.getElementById('dev-upgrade-mult');

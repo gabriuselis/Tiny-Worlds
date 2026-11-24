@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { PLANET_RADIUS } from '../core/config/world';
+import { cameraDirInPlanetSpace } from './planetSpace';
 import type { GameState } from '../core/state';
 
 interface AffordanceRing {
@@ -15,6 +16,7 @@ export class LogPileAffordance {
   private ringMaterial: THREE.MeshBasicMaterial;
   private camera: THREE.PerspectiveCamera;
   private planetGroup: THREE.Group;
+  private cameraDir = new THREE.Vector3();
   private time = 0;
 
   constructor(camera: THREE.PerspectiveCamera, planetGroup: THREE.Group) {
@@ -50,13 +52,14 @@ export class LogPileAffordance {
       }
     }
 
-    // Camera direction for facing check
-    const cameraDir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+    // Camera direction for facing check, in planet-LOCAL space (computed once
+    // per frame; the planet group rotates, so plot.dir stays local too).
+    cameraDirInPlanetSpace(this.camera.position, this.planetGroup.quaternion, this.cameraDir);
 
     // Update existing and create new rings
     for (const plot of logPlots) {
       // Only show for camera-facing piles
-      const dot = plot.dir.x * cameraDir.x + plot.dir.y * cameraDir.y + plot.dir.z * cameraDir.z;
+      const dot = plot.dir.x * this.cameraDir.x + plot.dir.y * this.cameraDir.y + plot.dir.z * this.cameraDir.z;
       if (dot <= 0.05) continue;
 
       let ring = this.rings.find((r) => r.plotId === plot.id);

@@ -6,11 +6,12 @@ import { hireWorker } from '../core/workers';
 import { add, format } from '../core/money';
 import { seedEmptyPlots, countPlotStates, logsWaiting } from '../core/game';
 import { collectPileByPlayer, processPlayerCollection } from '../core/wood';
-import { COLLECT_LOG_INTERVAL } from '../core/config/world';
+import { COLLECT_LOG_INTERVAL, TAP_CAMERA_FACING_DOT } from '../core/config/world';
 import type { Role, UpgradeId } from '../core/state';
 import { disposeWorkerModel } from '../render/worker';
 import { logEvent, showToast } from '../ui/ui';
 import { ctx } from '../app/context';
+import { cameraDirInPlanetSpace } from '../render/planetSpace';
 import { DT } from '../app/constants';
 import { showError } from '../app/errors';
 import { syncTrees } from '../app/trees';
@@ -234,6 +235,77 @@ export function installGameToolHooks(): void {
     } catch (err) {
       showError('Tap collect self test failed', err);
       return null;
+    }
+  };
+
+  // Debug piles: analyze tap-collect and marker issues, log exact causes.
+  (window as any).__debugPiles = () => {
+    try {
+      const { state, grid, sceneAPI, planetGroup, affordance } = ctx;
+      if (!sceneAPI || !grid) return;
+
+      const camera = sceneAPI.camera;
+      const viewProj = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+      const cameraDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
+      const planetMatrix = planetGroup.matrixWorld;
+      const surfaceRadius = ctx.surfaceRadius;
+
+      const logPlots = state.planets.verdant.plots.filter((p) => p.state === 'logs' && (p.woodLeft ?? 0) > 0);
+      logEvent(`DEBUG: ${logPlots.length} log plots found`);
+
+      // Check 1: wood added but pile stays - core collectPileByPlayer doesn't empty plot immediately
+      logEvent('CAUSE 1 (pile stays): wood.ts:67-97 collectPileByPlayer queues logs but plot.state stays "logs" until processPlayerCollection drains queue; trees.ts:219 renders while state==="logs" && woodLeft>0');
+
+      // Check 2: marker position mismatch
+      const tapPickRadius = 0.3; // from gestures.ts:101
+      const affordanceRadius = 0.35; // from affordance.ts:78
+      const treeBaseRadius = 0.002; // from trees.ts:195
+      logEvent(`CAUSE 2 (floating markers): tap pick uses planetRadius+${tapPickRadius} (gestures.ts:101), affordance uses PLANET_RADIUS+${affordanceRadius} (affordance.ts:78), actual pile at surfaceRadius+${treeBaseRadius}+localOffset (trees.ts:195,233)`);
+
+      // Check 3: marker brightness variation - each ring gets cloned material
+      logEvent('CAUSE 3 (brightness varies): affordance.ts:64 clones material per ring -> each has independent opacity; no pooling');
+
+      // Check 4: missing markers - back-face threshold difference
+      const tapDot = 0.05; // TAP_CAMERA_FACING_DOT from world.ts:53
+      logEvent(`CAUSE 4 (missing markers): both use dot>${tapDot} but affordance creates rings lazily; if plot not in logPlots filter (woodLeft===0) or ring removed, marker missing`);
+
+      // Sample a few plots for detailed position comparison
+      for (let i = 0; i < Math.min(3, logPlots.length); i++) {
+        const plot = logPlots[i];
+        const worldPos = new THREE.Vector3(plot.dir.x, plot.dir.y, plot.dir.z)
+          .multiplyScalar(surfaceRadius + 0.3)
+          .applyMatrix4(planetMatrix);
+        const screenPos = worldPos.clone().applyMatrix4(viewProj);
+        const sx = (screenPos.x * 0.5 + 0.5) * window.innerWidth;
+        const sy = (-screenPos.y * 0.5 + 0.5) * window.innerHeight;
+        const dot = plot.dir.x * cameraDir.x + plot.dir.y * cameraDir.y + plot.dir.z * cameraDir.z;
+        // @ts-ignore - accessing private rings for debug
+        const hasMarker = affordance?.rings?.some((r: any) => r.plotId === plot.id) ?? false;
+        logEvent(`  Plot ${plot.id}: state=${plot.state} woodLeft=${plot.woodLeft} world=(${worldPos.x.toFixed(3)},${worldPos.y.toFixed(3)},${worldPos.z.toFixed(3)}) screen=(${sx.toFixed(0)},${sy.toFixed(0)}) dot=${dot.toFixed(3)} marker=${hasMarker}`);
+      }
+
+      showToast(`Debug logged ${logPlots.length} piles - check dev log`);
+    } catch (err) {
+      showError('Debug piles failed', err);
+    }
+  };
+
+  // Dev: number of plots in state "logs" that pass the tap facing test right
+  // now. Rotation-invariant: same count at any planet rotation.
+  (window as any).__facingCount = () => {
+    try {
+      const { state, sceneAPI, planetGroup } = ctx;
+      if (!sceneAPI) return -1;
+      const dir = new THREE.Vector3();
+      cameraDirInPlanetSpace(sceneAPI.camera.position, planetGroup.quaternion, dir);
+      let count = 0;
+      for (const p of state.planets.verdant.plots) {
+        if (p.state !== 'logs') continue;
+        if (p.dir.x * dir.x + p.dir.y * dir.y + p.dir.z * dir.z > TAP_CAMERA_FACING_DOT) count++;
+      }
+      return count;
+    } catch {
+      return -1;
     }
   };
 
