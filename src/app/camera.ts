@@ -12,9 +12,11 @@ export function initCameraDistances(): void {
   try {
     const fov = 45 * (Math.PI / 180);
     const screenPadding = 0.85;
-    ctx.defaultDist = (planetRadius * 2) / (2 * Math.tan(fov / 2) * screenPadding);
+    const fitDist = (planetRadius * 2) / (2 * Math.tan(fov / 2) * screenPadding);
     ctx.minDist = planetRadius + WORLD_CONFIG.zoomMinAboveSurface;
-    ctx.maxDist = ctx.defaultDist * WORLD_CONFIG.zoomMaxMultiplier;
+    const maxDist = fitDist * WORLD_CONFIG.zoomMaxMultiplier;
+    ctx.defaultDist = maxDist;
+    ctx.maxDist = maxDist * WORLD_CONFIG.zoomMaxMultiplier;
   } catch (err) { showError('camera distance config failed', err); }
 }
 

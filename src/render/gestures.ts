@@ -27,7 +27,6 @@ export function setupGestures(o: Opts) {
   let pinchPrev = 0;
   let frames = 0;
   let lastEvent = 'none';
-  let lastTapTime = 0;
   let gestureHadMultiTouch = false;
   const pointers = new Map<number, { x: number; y: number; downX: number; downY: number; downTime: number; moved: boolean }>();
   const X = new Vector3(1, 0, 0), Y = new Vector3(0, 1, 0);
@@ -140,11 +139,6 @@ export function setupGestures(o: Opts) {
       gestureHadMultiTouch = true; // pinch / two-finger: never a tap
       pinchPrev = pinchDistance();
     }
-    // double tap reset
-    if (pointers.size === 1 && now - lastTapTime < 300) {
-      setDist(o.startDist);
-    }
-    lastTapTime = now;
   };
 
   const move = (e: PointerEvent) => {
