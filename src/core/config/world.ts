@@ -104,6 +104,7 @@ export const WORLD_CONFIG = {
   zoomMinAboveSurface: 0.8,
   zoomMaxMultiplier: 1.8,
   dragSensitivityK: 0.005,
+  idleAutoRotateSpeed: 0.2,
   // Worker sky-drop
   dropFlightTime: 0.9,
   dropStartScale: 0.25,

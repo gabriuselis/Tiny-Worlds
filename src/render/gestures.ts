@@ -250,7 +250,7 @@ export function setupGestures(o: Opts) {
       o.camera.lookAt(0, 0, 0);
       if (pointers.size === 0) {
         if (Math.abs(vx) > 0.01 || Math.abs(vy) > 0.01) { rotate(vx, vy); vx *= 0.95; vy *= 0.95; }
-        else if (performance.now() - lastInput > 3000) rotate(0.4, 0);
+        else if (performance.now() - lastInput > 3000) rotate(WORLD_CONFIG.idleAutoRotateSpeed, 0);
       }
       o.debug?.(`frame ${frames} | ptrs ${pointers.size} | ev ${lastEvent} | dist ${dist.toFixed(2)} | above ${dAbove.toFixed(2)} | min ${getMinDist().toFixed(2)} | max ${getMaxDist().toFixed(2)}`);
     },
