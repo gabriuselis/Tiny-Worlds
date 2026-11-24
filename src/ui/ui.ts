@@ -723,6 +723,7 @@ function createDevMenu(): void {
       <button type="button" class="dev-btn" id="dev-add-wood">+10 wood</button>
       <button type="button" class="dev-btn" id="dev-test-particles">Emit test particles</button>
       <button type="button" class="dev-btn" id="dev-wood-test">Run wood self-test</button>
+      <button type="button" class="dev-btn" id="dev-tap-test">Tap collect self-test</button>
     </div>
     <div class="dev-menu-section">
       <div class="dev-subtitle">Display</div>
@@ -825,6 +826,7 @@ const actions: { [id: string]: () => void } = {
     'dev-add-wood': () => (window as any).__addWood?.(10),
     'dev-test-particles': () => (window as any).__emitTestParticles?.(),
     'dev-wood-test': () => (window as any).__runWoodSelfTest?.(),
+    'dev-tap-test': () => (window as any).__runTapCollectSelfTest?.(),
     'dev-toggle-fps': () => (window as any).__toggleFps?.(),
     'dev-toggle-log': () => (window as any).__toggleLog?.(),
     'dev-self-test': runSelfTest,

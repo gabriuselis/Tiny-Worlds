@@ -1,7 +1,8 @@
 import { Quaternion, Vector3, type Object3D, type PerspectiveCamera, Matrix4 } from 'three';
-import { WORLD_CONFIG, TAP_RADIUS_PX, TAP_RADIUS_SCALE_FACTOR, TAP_CAMERA_FACING_DOT } from '../core/config/world';
+import { WORLD_CONFIG, TAP_CAMERA_FACING_DOT, GROW_POP_SECONDS } from '../core/config/world';
 import { collectPileByPlayer } from '../core/wood';
 import type { GameState, Plot } from '../core/state';
+import { pickNearestPile, isTapGesture, TAP_MOVE_TOLERANCE_PX, type ScreenPile } from './tapPick';
 
 interface Opts {
   planet: Object3D;
@@ -17,9 +18,6 @@ interface Opts {
   onTapPile?: (plotId: number, screenX: number, screenY: number) => void;
 }
 
-const TAP_MAX_MOVEMENT_PX = 10;
-const TAP_MAX_DURATION_MS = 350;
-
 export function setupGestures(o: Opts) {
   let dist = o.startDist;
   let targetDist = o.startDist;
@@ -29,9 +27,17 @@ export function setupGestures(o: Opts) {
   let frames = 0;
   let lastEvent = 'none';
   let lastTapTime = 0;
+  let gestureHadMultiTouch = false;
   const pointers = new Map<number, { x: number; y: number; downX: number; downY: number; downTime: number; moved: boolean }>();
   const X = new Vector3(1, 0, 0), Y = new Vector3(0, 1, 0);
   const q = new Quaternion();
+
+  // Reused scratch objects for tap picking (no per-tap allocations).
+  const viewProj = new Matrix4();
+  const cameraDir = new Vector3();
+  const worldPos = new Vector3();
+  const screenPos = new Vector3();
+  const candidates: ScreenPile[] = [];
 
   let devMenu: HTMLElement | null = null;
   const devMenuOpen = () => {
@@ -71,52 +77,43 @@ export function setupGestures(o: Opts) {
     o.planet.quaternion.premultiply(q.setFromAxisAngle(X, dy * k));
   };
 
-  // Find the nearest tappable log pile to the screen coordinates
+  // Find the nearest tappable log pile to the screen coordinates.
+  // Projects each pile through the planet's world matrix (so it follows the
+  // planet's rotation), applies the back-face check, then defers to the pure
+  // nearest-within-radius helper.
   const findTappedPile = (screenX: number, screenY: number): Plot | null => {
     const logPlots = o.getLogPlots();
     if (logPlots.length === 0) return null;
 
     const camera = o.camera;
-    const viewMatrix = new Matrix4().copy(camera.matrixWorldInverse);
-    const projMatrix = new Matrix4().copy(camera.projectionMatrix);
-    const viewProjMatrix = new Matrix4().multiplyMatrices(projMatrix, viewMatrix);
+    viewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    cameraDir.set(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
+    const planetMatrix = o.planet.matrixWorld;
 
-    const cameraDir = new Vector3(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
-
-    let bestPlot: Plot | null = null;
-    let bestDist = Infinity;
-
+    candidates.length = 0;
     for (const plot of logPlots) {
-      // Only camera-facing piles
+      // Back-face check: ignore piles on the far side of the planet.
       const dot = plot.dir.x * cameraDir.x + plot.dir.y * cameraDir.y + plot.dir.z * cameraDir.z;
       if (dot <= TAP_CAMERA_FACING_DOT) continue;
 
-      // Project plot position to screen
-      const worldPos = new Vector3(plot.dir.x, plot.dir.y, plot.dir.z).multiplyScalar(o.planetRadius + 0.3);
-      const screenPos = worldPos.clone().applyMatrix4(viewProjMatrix);
-      
-      // Convert NDC to screen pixels
-      const x = (screenPos.x * 0.5 + 0.5) * window.innerWidth;
-      const y = (-screenPos.y * 0.5 + 0.5) * window.innerHeight;
-      
-      // Skip if behind camera
-      if (screenPos.z > 1 || screenPos.z < -1) continue;
+      worldPos
+        .set(plot.dir.x, plot.dir.y, plot.dir.z)
+        .multiplyScalar(o.planetRadius + 0.3)
+        .applyMatrix4(planetMatrix);
+      screenPos.copy(worldPos).applyMatrix4(viewProj);
+      if (screenPos.z > 1 || screenPos.z < -1) continue; // behind camera
 
-      const dx = x - screenX;
-      const dy = y - screenY;
-      const distPx = Math.hypot(dx, dy);
-
-      // Scale tap radius with pile screen size
-      const pileScreenSize = Math.max(1, 0.3 * window.innerHeight / (dist / o.planetRadius));
-      const tapRadius = Math.max(TAP_RADIUS_PX, TAP_RADIUS_SCALE_FACTOR * pileScreenSize);
-
-      if (distPx <= tapRadius && distPx < bestDist) {
-        bestDist = distPx;
-        bestPlot = plot;
-      }
+      candidates.push({
+        id: plot.id,
+        x: (screenPos.x * 0.5 + 0.5) * window.innerWidth,
+        y: (-screenPos.y * 0.5 + 0.5) * window.innerHeight,
+        visible: true,
+      });
     }
 
-    return bestPlot;
+    const hit = pickNearestPile(candidates, screenX, screenY);
+    if (!hit) return null;
+    return logPlots.find((p) => p.id === hit.id) ?? null;
   };
 
   const down = (e: PointerEvent) => {
@@ -133,7 +130,10 @@ export function setupGestures(o: Opts) {
     });
     lastInput = now; 
     vx = vy = 0;
-    if (pointers.size === 2) {
+    if (pointers.size === 1) {
+      gestureHadMultiTouch = false; // fresh single-finger gesture
+    } else if (pointers.size >= 2) {
+      gestureHadMultiTouch = true; // pinch / two-finger: never a tap
       pinchPrev = pinchDistance();
     }
     // double tap reset
@@ -155,7 +155,7 @@ export function setupGestures(o: Opts) {
     // Check if pointer has moved enough to not be a tap
     const totalDx = e.clientX - p.downX;
     const totalDy = e.clientY - p.downY;
-    if (Math.hypot(totalDx, totalDy) > TAP_MAX_MOVEMENT_PX) {
+    if (Math.hypot(totalDx, totalDy) > TAP_MOVE_TOLERANCE_PX) {
       p.moved = true;
     }
     
@@ -184,20 +184,25 @@ export function setupGestures(o: Opts) {
   const up = (e: PointerEvent) => {
     const p = pointers.get(e.pointerId);
     const now = performance.now();
-    
-    // Check for tap: single pointer, not moved much, short duration, no pinch/drag occurred
-    if (p && pointers.size === 1 && !p.moved && (now - p.downTime) < TAP_MAX_DURATION_MS && lastEvent !== 'move') {
+
+    // Tap = single still finger, short press, no pinch/drag during the gesture.
+    if (p && pointers.size === 1 && isTapGesture({
+      downX: p.downX, downY: p.downY, upX: e.clientX, upY: e.clientY,
+      downTime: p.downTime, upTime: now, multiTouch: gestureHadMultiTouch,
+    })) {
       const tappedPlot = findTappedPile(e.clientX, e.clientY);
       if (tappedPlot) {
         const logsCollected = collectPileByPlayer(o.getState(), tappedPlot.id);
         if (logsCollected > 0) {
+          tappedPlot.popTimer = GROW_POP_SECONDS; // small pop on the pile
           o.onTapPile?.(tappedPlot.id, e.clientX, e.clientY);
         }
       }
     }
-    
-    pointers.delete(e.pointerId); 
-    pinchPrev = 0; 
+
+    pointers.delete(e.pointerId);
+    pinchPrev = 0;
+    if (pointers.size === 0) gestureHadMultiTouch = false;
     lastEvent = 'up';
   };
 

@@ -33,7 +33,6 @@ initGestures();
 // Initialize affordance system for log pile tap hints
 if (ctx.sceneAPI) {
   ctx.affordance = new LogPileAffordance(
-    ctx.sceneAPI.scene,
     ctx.sceneAPI.camera,
     ctx.planetGroup
   );

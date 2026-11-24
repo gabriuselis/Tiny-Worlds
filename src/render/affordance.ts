@@ -13,13 +13,11 @@ export class LogPileAffordance {
   private rings: AffordanceRing[] = [];
   private ringGeometry: THREE.RingGeometry;
   private ringMaterial: THREE.MeshBasicMaterial;
-  private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private planetGroup: THREE.Group;
   private time = 0;
 
-  constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera, planetGroup: THREE.Group) {
-    this.scene = scene;
+  constructor(camera: THREE.PerspectiveCamera, planetGroup: THREE.Group) {
     this.camera = camera;
     this.planetGroup = planetGroup;
 
@@ -42,11 +40,11 @@ export class LogPileAffordance {
     );
     const currentPlotIds = new Set(logPlots.map((p) => p.id));
 
-    // Remove rings for collected piles
+    // Remove rings for collected piles (detach from the planet group; the
+    // geometry is shared, so only the per-ring cloned material is disposed).
     for (let i = this.rings.length - 1; i >= 0; i--) {
       if (!currentPlotIds.has(this.rings[i].plotId)) {
-        this.scene.remove(this.rings[i].mesh);
-        this.rings[i].mesh.geometry.dispose();
+        this.rings[i].mesh.removeFromParent();
         (this.rings[i].mesh.material as THREE.Material).dispose();
         this.rings.splice(i, 1);
       }
@@ -95,8 +93,7 @@ export class LogPileAffordance {
 
   dispose(): void {
     for (const ring of this.rings) {
-      this.scene.remove(ring.mesh);
-      ring.mesh.geometry.dispose();
+      ring.mesh.removeFromParent();
       (ring.mesh.material as THREE.Material).dispose();
     }
     this.rings.length = 0;

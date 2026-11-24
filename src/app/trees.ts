@@ -171,7 +171,6 @@ const _basePos = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _yawQ = new THREE.Quaternion();
 const _up = new THREE.Vector3(0, 1, 0);
-const _one = new THREE.Vector3(1, 1, 1);
 const _local = new THREE.Vector3();
 const _world = new THREE.Vector3();
 
@@ -226,11 +225,13 @@ export function writeTreeMatrices(plot: Plot): void {
 function writeLogPile(plot: Plot, count: number, basePos: THREE.Vector3, baseQ: THREE.Quaternion): void {
   const yawJitter = (hashAngle(plot.id * 7 + 1) / (Math.PI * 2) - 0.5) * 2 * LOG_YAW_JITTER;
   const yawQ = _yawQ.setFromAxisAngle(_up, yawJitter);
+  // Small pop when the pile is first tapped/created (shares the tree pop timer).
+  const pop = plot.popTimer ? 1 + POP_AMOUNT * clamp01(plot.popTimer / GROW_POP_SECONDS) : 1;
   for (let k = 0; k < count; k++) {
     if (k === 2) _local.set(0, LOG_TOP_Y, 0);
     else _local.set(k === 0 ? -(LOG_RADIUS + 0.002) : LOG_RADIUS + 0.002, LOG_BOTTOM_Y, 0);
     _world.copy(_local).applyQuaternion(yawQ).applyQuaternion(baseQ).add(basePos);
-    treeMatrix.compose(_world, baseQ, _one);
+    treeMatrix.compose(_world, baseQ, treeScale.set(pop, pop, pop));
     showInstance(logPool, logSlots, plot.id * LOG_LOGS_PER_PILE + k, treeMatrix);
   }
 }

@@ -5,6 +5,8 @@ import { plantSpeedMult, chopSpeedMult, woodValueMult, UPGRADES } from '../core/
 import { hireWorker } from '../core/workers';
 import { add, format } from '../core/money';
 import { seedEmptyPlots, countPlotStates, logsWaiting } from '../core/game';
+import { collectPileByPlayer, processPlayerCollection } from '../core/wood';
+import { COLLECT_LOG_INTERVAL } from '../core/config/world';
 import type { Role, UpgradeId } from '../core/state';
 import { disposeWorkerModel } from '../render/worker';
 import { logEvent, showToast } from '../ui/ui';
@@ -196,6 +198,41 @@ export function installGameToolHooks(): void {
       return result;
     } catch (err) {
       showError('Wood self test failed', err);
+      return null;
+    }
+  };
+
+  // Headless tap-collect self test: one pile, +3 wood exactly once, plot empty.
+  (window as any).__runTapCollectSelfTest = () => {
+    try {
+      const sim = initialState();
+      seedEmptyPlots(sim, ctx.grid.plots);
+      const plot = sim.planets.verdant.plots[0];
+      plot.state = 'logs';
+      plot.woodLeft = 3;
+      plot.timer = 0;
+      plot.reservedBy = undefined;
+
+      const before = sim.wood.toNumber();
+      const collected = collectPileByPlayer(sim, plot.id);
+      for (let i = 0; i < 3; i++) processPlayerCollection(sim, COLLECT_LOG_INTERVAL);
+      const after = sim.wood.toNumber();
+      const stateAfter = plot.state as string;
+
+      const ok = collected === 3 && after === before + 3 && stateAfter === 'empty' && (plot.woodLeft ?? 0) === 0;
+      const msg = `${ok ? 'PASS' : 'FAIL'} - wood ${before} -> ${after}, plot ${stateAfter}, woodLeft ${plot.woodLeft ?? 0}`;
+      logEvent(`__runTapCollectSelfTest: ${msg}`);
+      showToast(msg);
+      const el = document.getElementById('dev-self-results');
+      if (el) {
+        const line = document.createElement('div');
+        line.textContent = msg;
+        line.className = ok ? 'dev-self-pass' : 'dev-self-fail';
+        el.appendChild(line);
+      }
+      return { ok, before, after, collected, state: plot.state };
+    } catch (err) {
+      showError('Tap collect self test failed', err);
       return null;
     }
   };
