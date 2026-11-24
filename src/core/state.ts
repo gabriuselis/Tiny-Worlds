@@ -50,6 +50,9 @@ export interface Plot {
   woodLeft?: number; // logs remaining on a 'logs' pile (0..3)
   fallDir?: Vec3; // tangent direction the tree falls toward
   popTimer?: number; // visual pop scale boost when a growth stage changes
+  collectQueue?: number; // number of logs queued for carrier pickup
+  collectTimer?: number; // seconds until next log can be picked up
+  beingCollected?: boolean; // true while a worker/player is actively taking a log
 }
 
 export interface Worker {

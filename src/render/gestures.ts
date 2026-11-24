@@ -1,5 +1,7 @@
-import { Quaternion, Vector3, type Object3D, type PerspectiveCamera } from 'three';
-import { WORLD_CONFIG } from '../core/config/world';
+import { Quaternion, Vector3, type Object3D, type PerspectiveCamera, Matrix4 } from 'three';
+import { WORLD_CONFIG, TAP_RADIUS_PX, TAP_RADIUS_SCALE_FACTOR, TAP_CAMERA_FACING_DOT } from '../core/config/world';
+import { collectPileByPlayer } from '../core/wood';
+import type { GameState, Plot } from '../core/state';
 
 interface Opts {
   planet: Object3D;
@@ -10,7 +12,13 @@ interface Opts {
   minDist: number;
   maxDist: number;
   debug?: (text: string) => void;
+  getState: () => GameState;
+  getLogPlots: () => Plot[];
+  onTapPile?: (plotId: number, screenX: number, screenY: number) => void;
 }
+
+const TAP_MAX_MOVEMENT_PX = 10;
+const TAP_MAX_DURATION_MS = 350;
 
 export function setupGestures(o: Opts) {
   let dist = o.startDist;
@@ -21,7 +29,7 @@ export function setupGestures(o: Opts) {
   let frames = 0;
   let lastEvent = 'none';
   let lastTapTime = 0;
-  const pointers = new Map<number, { x: number; y: number }>();
+  const pointers = new Map<number, { x: number; y: number; downX: number; downY: number; downTime: number; moved: boolean }>();
   const X = new Vector3(1, 0, 0), Y = new Vector3(0, 1, 0);
   const q = new Quaternion();
 
@@ -63,49 +71,145 @@ export function setupGestures(o: Opts) {
     o.planet.quaternion.premultiply(q.setFromAxisAngle(X, dy * k));
   };
 
+  // Find the nearest tappable log pile to the screen coordinates
+  const findTappedPile = (screenX: number, screenY: number): Plot | null => {
+    const logPlots = o.getLogPlots();
+    if (logPlots.length === 0) return null;
+
+    const camera = o.camera;
+    const viewMatrix = new Matrix4().copy(camera.matrixWorldInverse);
+    const projMatrix = new Matrix4().copy(camera.projectionMatrix);
+    const viewProjMatrix = new Matrix4().multiplyMatrices(projMatrix, viewMatrix);
+
+    const cameraDir = new Vector3(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
+
+    let bestPlot: Plot | null = null;
+    let bestDist = Infinity;
+
+    for (const plot of logPlots) {
+      // Only camera-facing piles
+      const dot = plot.dir.x * cameraDir.x + plot.dir.y * cameraDir.y + plot.dir.z * cameraDir.z;
+      if (dot <= TAP_CAMERA_FACING_DOT) continue;
+
+      // Project plot position to screen
+      const worldPos = new Vector3(plot.dir.x, plot.dir.y, plot.dir.z).multiplyScalar(o.planetRadius + 0.3);
+      const screenPos = worldPos.clone().applyMatrix4(viewProjMatrix);
+      
+      // Convert NDC to screen pixels
+      const x = (screenPos.x * 0.5 + 0.5) * window.innerWidth;
+      const y = (-screenPos.y * 0.5 + 0.5) * window.innerHeight;
+      
+      // Skip if behind camera
+      if (screenPos.z > 1 || screenPos.z < -1) continue;
+
+      const dx = x - screenX;
+      const dy = y - screenY;
+      const distPx = Math.hypot(dx, dy);
+
+      // Scale tap radius with pile screen size
+      const pileScreenSize = Math.max(1, 0.3 * window.innerHeight / (dist / o.planetRadius));
+      const tapRadius = Math.max(TAP_RADIUS_PX, TAP_RADIUS_SCALE_FACTOR * pileScreenSize);
+
+      if (distPx <= tapRadius && distPx < bestDist) {
+        bestDist = distPx;
+        bestPlot = plot;
+      }
+    }
+
+    return bestPlot;
+  };
+
   const down = (e: PointerEvent) => {
     lastEvent = 'down';
     if (isUI(e.target)) return;
-    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    lastInput = performance.now(); vx = vy = 0;
+    const now = performance.now();
+    pointers.set(e.pointerId, { 
+      x: e.clientX, 
+      y: e.clientY,
+      downX: e.clientX,
+      downY: e.clientY,
+      downTime: now,
+      moved: false
+    });
+    lastInput = now; 
+    vx = vy = 0;
     if (pointers.size === 2) {
       pinchPrev = pinchDistance();
     }
     // double tap reset
-    const now = performance.now();
     if (pointers.size === 1 && now - lastTapTime < 300) {
       setDist(o.startDist);
     }
     lastTapTime = now;
   };
+
   const move = (e: PointerEvent) => {
     const p = pointers.get(e.pointerId);
     if (!p) return;
     lastEvent = 'move';
     lastInput = performance.now();
-    if (pointers.size === 1) {
-      const dx = e.clientX - p.x, dy = e.clientY - p.y;
-      rotate(dx, dy); vx = dx; vy = dy;
+    
+    const dx = e.clientX - p.x;
+    const dy = e.clientY - p.y;
+    
+    // Check if pointer has moved enough to not be a tap
+    const totalDx = e.clientX - p.downX;
+    const totalDy = e.clientY - p.downY;
+    if (Math.hypot(totalDx, totalDy) > TAP_MAX_MOVEMENT_PX) {
+      p.moved = true;
+    }
+    
+    if (pointers.size === 1 && !p.moved) {
+      // Still potential tap - don't rotate yet
+    } else if (pointers.size === 1) {
+      rotate(dx, dy); 
+      vx = dx; 
+      vy = dy;
     } else if (pointers.size === 2) {
-      p.x = e.clientX; p.y = e.clientY;
+      p.x = e.clientX; 
+      p.y = e.clientY;
       const d = pinchDistance();
       if (pinchPrev > 0) {
-        const scale = pinchPrev / d; // spread apart -> dist decreases -> zoom in
+        const scale = pinchPrev / d;
         setDist(dist * scale);
       }
-      pinchPrev = d; vx = vy = 0;
+      pinchPrev = d; 
+      vx = vy = 0;
       return;
     }
-    p.x = e.clientX; p.y = e.clientY;
+    p.x = e.clientX; 
+    p.y = e.clientY;
   };
-  const up = (e: PointerEvent) => { pointers.delete(e.pointerId); pinchPrev = 0; lastEvent = 'up'; };
+
+  const up = (e: PointerEvent) => {
+    const p = pointers.get(e.pointerId);
+    const now = performance.now();
+    
+    // Check for tap: single pointer, not moved much, short duration, no pinch/drag occurred
+    if (p && pointers.size === 1 && !p.moved && (now - p.downTime) < TAP_MAX_DURATION_MS && lastEvent !== 'move') {
+      const tappedPlot = findTappedPile(e.clientX, e.clientY);
+      if (tappedPlot) {
+        const logsCollected = collectPileByPlayer(o.getState(), tappedPlot.id);
+        if (logsCollected > 0) {
+          o.onTapPile?.(tappedPlot.id, e.clientX, e.clientY);
+        }
+      }
+    }
+    
+    pointers.delete(e.pointerId); 
+    pinchPrev = 0; 
+    lastEvent = 'up';
+  };
+
   const wheel = (e: WheelEvent) => {
     if (isUI(e.target)) return;
     const factor = zoomSpeedFactor() * (e.ctrlKey ? 0.002 : 0.001);
     setDist(dist * (1 - e.deltaY * factor));
-    lastInput = performance.now(); lastEvent = 'wheel';
+    lastInput = performance.now(); 
+    lastEvent = 'wheel';
     e.preventDefault();
   };
+  
   const block = (e: TouchEvent) => { if (!isUI(e.target)) e.preventDefault(); };
 
   window.addEventListener('pointerdown', down, true);
@@ -122,7 +226,7 @@ export function setupGestures(o: Opts) {
     e.preventDefault();
     const ge = e as any;
     if (ge.scale !== 1) {
-      setDist(dist / ge.scale); // ge.scale > 1 = spread apart = zoom in = dist decreases
+      setDist(dist / ge.scale);
       pinchPrev = 0;
     }
     lastEvent = 'gesturechange';

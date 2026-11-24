@@ -17,8 +17,9 @@ import { updateCarrier } from '../src/core/ai/carrier';
 import { hireWorker } from '../src/core/workers';
 import { seedEmptyPlots, fillPlanet, clearPlanet, resetGame, countPlotStates, sweepReservations, logsWaiting, spawnLogPiles } from '../src/core/game';
 import { buildGrid } from '../src/core/grid';
-import { GROW_STAGE_SECONDS, GROW_TOTAL_SECONDS, LOG_LOGS_PER_PILE, WORLD_CONFIG, WOOD_PRICE } from '../src/core/config/world';
+import { GROW_STAGE_SECONDS, GROW_TOTAL_SECONDS, LOG_LOGS_PER_PILE, WORLD_CONFIG, WOOD_PRICE, COLLECT_LOG_INTERVAL } from '../src/core/config/world';
 import { WORKER_MIN_RUN_SECONDS } from '../src/core/config/worker';
+import { collectPileByPlayer, processPlayerCollection } from '../src/core/wood';
 
 describe('cost curves', () => {
   it('planter cost grows exponentially', () => {
@@ -658,5 +659,242 @@ describe('wood chain (lumberjack + carrier)', () => {
     expect(s.planets.verdant.treesHarvested).toBeGreaterThan(0);
     expect(s.stats.woodSold.toNumber()).toBeGreaterThan(0);
     expect(s.currencies.credits.toNumber()).toBeGreaterThan(100);
+  });
+});
+
+describe('player tap collection', () => {
+  function playerWorld() {
+    const s = initialState();
+    const grid = buildGrid();
+    for (const p of grid.plots) {
+      p.state = 'empty';
+      p.timer = 0;
+      p.reservedBy = undefined;
+      p.woodLeft = 0;
+      p.fallDir = undefined;
+      p.collectQueue = 0;
+      p.collectTimer = 0;
+      p.beingCollected = false;
+    }
+    s.planets.verdant.plots = grid.plots;
+    return { s, grid };
+  }
+
+  it('collectPileByPlayer returns 0 for non-logs plots', () => {
+    const { s, grid } = playerWorld();
+    grid.plots[0].state = 'grown';
+    grid.plots[1].state = 'sapling';
+    grid.plots[2].state = 'medium';
+    grid.plots[3].state = 'falling';
+    grid.plots[4].state = 'empty';
+    
+    expect(collectPileByPlayer(s, grid.plots[0].id)).toBe(0);
+    expect(collectPileByPlayer(s, grid.plots[1].id)).toBe(0);
+    expect(collectPileByPlayer(s, grid.plots[2].id)).toBe(0);
+    expect(collectPileByPlayer(s, grid.plots[3].id)).toBe(0);
+    expect(collectPileByPlayer(s, grid.plots[4].id)).toBe(0);
+    expect(s.wood.toNumber()).toBe(0);
+    expect(s.woodToSell.toNumber()).toBe(0);
+  });
+
+  it('collectPileByPlayer returns 0 for logs plot with woodLeft 0', () => {
+    const { s, grid } = playerWorld();
+    grid.plots[0].state = 'logs';
+    grid.plots[0].woodLeft = 0;
+    
+    expect(collectPileByPlayer(s, grid.plots[0].id)).toBe(0);
+    expect(s.wood.toNumber()).toBe(0);
+  });
+
+  it('collectPileByPlayer collects a pile of 3 logs and marks plot empty', () => {
+    const { s, grid } = playerWorld();
+    grid.plots[5].state = 'logs';
+    grid.plots[5].woodLeft = 3;
+    const plotId = grid.plots[5].id;
+    
+    const collected = collectPileByPlayer(s, plotId);
+    expect(collected).toBe(3);
+    expect(s.wood.toNumber()).toBe(0); // wood increases in processPlayerCollection
+    
+    // Process collection over time
+    for (let i = 0; i < 3; i++) {
+      processPlayerCollection(s, COLLECT_LOG_INTERVAL);
+    }
+    
+    expect(s.wood.toNumber()).toBe(3);
+    expect(s.woodToSell.toNumber()).toBe(0); // instant sell subtracts from woodToSell
+    expect(s.currencies.credits.toNumber()).toBe(100 + 3 * WOOD_PRICE); // 100 + 3*2 = 106
+    const plot = s.planets.verdant.plots.find(p => p.id === plotId)!;
+    expect(plot.state).toBe('empty');
+    expect(plot.woodLeft).toBe(0);
+  });
+
+  it('collectPileByPlayer works with woodLeft 1', () => {
+    const { s, grid } = playerWorld();
+    grid.plots[10].state = 'logs';
+    grid.plots[10].woodLeft = 1;
+    const plotId = grid.plots[10].id;
+    
+    collectPileByPlayer(s, plotId);
+    processPlayerCollection(s, COLLECT_LOG_INTERVAL);
+    
+    expect(s.wood.toNumber()).toBe(1);
+    expect(s.currencies.credits.toNumber()).toBe(100 + 1 * WOOD_PRICE);
+    const plot = s.planets.verdant.plots.find(p => p.id === plotId)!;
+    expect(plot.state).toBe('empty');
+  });
+
+  it('collectPileByPlayer releases reserved-but-not-started carrier', () => {
+    const { s, grid } = playerWorld();
+    grid.plots[15].state = 'logs';
+    grid.plots[15].woodLeft = 3;
+    grid.plots[15].reservedBy = 42;
+    const plotId = grid.plots[15].id;
+    
+    const carrier = { id: 42, role: 'carrier' as const, pos: { x: 0, y: 0, z: 2.5 }, state: 'walking' as const, target: plotId, level: 0, cosmetic: { hat: 'cap', color: '#fff' }, name: 'c', stuckTimer: 0, stateTimer: 0 };
+    s.planets.verdant.workers.push(carrier);
+    
+    collectPileByPlayer(s, plotId);
+    
+    expect(grid.plots[15].reservedBy).toBeUndefined();
+    expect(carrier.state).toBe('idle');
+    expect(carrier.target).toBeUndefined();
+  });
+
+  it('collectPileByPlayer releases reserved-but-waiting carrier', () => {
+    const { s, grid } = playerWorld();
+    grid.plots[16].state = 'logs';
+    grid.plots[16].woodLeft = 3;
+    grid.plots[16].reservedBy = 43;
+    const plotId = grid.plots[16].id;
+    
+    const carrier = { id: 43, role: 'carrier' as const, pos: { x: 0, y: 0, z: 2.5 }, state: 'waiting' as const, target: plotId, level: 0, cosmetic: { hat: 'cap', color: '#fff' }, name: 'c', stuckTimer: 0, stateTimer: 0 };
+    s.planets.verdant.workers.push(carrier);
+    
+    collectPileByPlayer(s, plotId);
+    
+    expect(grid.plots[16].reservedBy).toBeUndefined();
+    expect(carrier.state).toBe('idle');
+    expect(carrier.target).toBeUndefined();
+  });
+
+  it('collectPileByPlayer with worker mid-pickup takes remaining logs only', () => {
+    const { s, grid } = playerWorld();
+    grid.plots[20].state = 'logs';
+    grid.plots[20].woodLeft = 3;
+    grid.plots[20].reservedBy = 44;
+    const plotId = grid.plots[20].id;
+    
+    const carrier = { id: 44, role: 'carrier' as const, pos: { x: 0, y: 0, z: 2.5 }, state: 'picking' as const, target: plotId, level: 0, cosmetic: { hat: 'cap', color: '#fff' }, name: 'c', stuckTimer: 0, stateTimer: 1.5, actionTimer: 1.0, carryingLogs: 1 };
+    s.planets.verdant.workers.push(carrier);
+    // Carrier already took 1 log, 2 left
+    s.wood = toMoney(1);
+    s.woodToSell = toMoney(1);
+    grid.plots[20].woodLeft = 2;
+    
+    collectPileByPlayer(s, plotId);
+    
+    // Player should get the remaining 2 logs
+    processPlayerCollection(s, COLLECT_LOG_INTERVAL);
+    processPlayerCollection(s, COLLECT_LOG_INTERVAL);
+    // Let carrier AI react to player collection
+    tick(s, 0.1);
+    
+    expect(s.wood.toNumber()).toBe(3); // 1 (carrier) + 2 (player)
+    expect(carrier.state).toBe('idle');
+    expect(carrier.carryingLogs).toBe(0);
+    const plot = s.planets.verdant.plots.find(p => p.id === plotId)!;
+    expect(plot.state).toBe('empty');
+  });
+
+  it('planter plants on plot right after it becomes empty from player collection', () => {
+    const { s, grid } = playerWorld();
+    // Make all other plots grown so only our plot becomes empty
+    for (const p of grid.plots) {
+      if (p.id !== grid.plots[25].id) p.state = 'grown';
+    }
+    grid.plots[25].state = 'logs';
+    grid.plots[25].woodLeft = 3;
+    const plotId = grid.plots[25].id;
+    
+    collectPileByPlayer(s, plotId);
+    // Process collection to completion
+    for (let i = 0; i < 3; i++) {
+      processPlayerCollection(s, COLLECT_LOG_INTERVAL);
+    }
+    
+    const plot = s.planets.verdant.plots.find(p => p.id === plotId)!;
+    expect(plot.state).toBe('empty');
+    expect(plot.reservedBy).toBeUndefined();
+    
+    // Spawn a planter and verify it can plant on the freed plot
+    const planter = hireWorker(s, 'planter', { free: true, spawnDir: { x: 0, y: 0, z: 1 } })!;
+    for (let i = 0; i < 10; i++) {
+      tick(s, 0.1);
+    }
+    expect(planter.state).toBe('walking');
+    expect(planter.target).toBe(plotId);
+    expect(plot.reservedBy).toBe(planter.id);
+  });
+
+  it('Reset clears collection queues', () => {
+    const { s, grid } = playerWorld();
+    grid.plots[30].state = 'logs';
+    grid.plots[30].woodLeft = 3;
+    grid.plots[30].collectQueue = 2;
+    grid.plots[30].collectTimer = 0.05;
+    grid.plots[30].beingCollected = true;
+    const plotId = grid.plots[30].id;
+    // Save seeds before reset (resetGame clears the plots array)
+    const seeds = grid.plots.map(p => ({ id: p.id, dir: p.dir }));
+    
+    resetGame(s);
+    seedEmptyPlots(s, seeds);
+    
+    const plot = s.planets.verdant.plots.find(p => p.id === plotId);
+    expect(plot).toBeDefined();
+    if (plot) {
+      expect(plot.state).toBe('empty');
+      // New plots from seedEmptyPlots have undefined optional fields (treated as 0/false)
+      expect(plot.collectQueue ?? 0).toBe(0);
+      expect(plot.collectTimer ?? 0).toBe(0);
+      expect(plot.beingCollected ?? false).toBe(false);
+    }
+  });
+
+  it('player collection respects woodValue upgrade for credits', () => {
+    const { s, grid } = playerWorld();
+    s.upgrades.woodValue = 2; // +20% value
+    grid.plots[35].state = 'logs';
+    grid.plots[35].woodLeft = 1;
+    const plotId = grid.plots[35].id;
+    
+    collectPileByPlayer(s, plotId);
+    processPlayerCollection(s, COLLECT_LOG_INTERVAL);
+    
+    // WOOD_PRICE = 2, valueMult = 1.2, earned = 2 * 1.2 = 2.4
+    expect(s.currencies.credits.toNumber()).toBeCloseTo(100 + 2.4);
+  });
+
+  it('carrier re-targets to another pile after player takes its target', () => {
+    const { s, grid } = playerWorld();
+    grid.plots[40].state = 'logs';
+    grid.plots[40].woodLeft = 3;
+    grid.plots[40].reservedBy = 50;
+    grid.plots[41].state = 'logs';
+    grid.plots[41].woodLeft = 3;
+    const plotId1 = grid.plots[40].id;
+    const plotId2 = grid.plots[41].id;
+    
+    const carrier = { id: 50, role: 'carrier' as const, pos: { x: 0, y: 0, z: 2.5 }, state: 'walking' as const, target: plotId1, level: 0, cosmetic: { hat: 'cap', color: '#fff' }, name: 'c', stuckTimer: 0, stateTimer: 0 };
+    s.planets.verdant.workers.push(carrier);
+    
+    collectPileByPlayer(s, plotId1);
+    processPlayerCollection(s, COLLECT_LOG_INTERVAL * 3); // Collect all 3
+    
+    // Carrier should go idle and re-target on next tick
+    tick(s, 0.1);
+    expect(carrier.state).toBe('walking');
+    expect(carrier.target).toBe(plotId2);
   });
 });

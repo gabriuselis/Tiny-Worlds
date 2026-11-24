@@ -24,7 +24,7 @@ export const TREE_SHADOW_LIFT = 0.003;
 // Total standing height of a full-grown tree (~0.543 world units).
 export const TREE_TOTAL_HEIGHT = TREE_CROWN_CENTER_Y + TREE_CROWN_RADIUS * TREE_CROWN_SQUASH_Y;
 
-// Log pile (the little ðŸªµ pyramid on a chopped plot)
+// Log pile (the little 🪵 pyramid on a chopped plot)
 export const LOG_RADIUS = 0.028;
 export const LOG_LENGTH = 0.17;
 export const LOG_BODY_COLOR = 0x7a4e26;
@@ -41,6 +41,16 @@ export const WOOD_PRICE = 2;
 
 // Trade post is at the north pole of the verdant planet.
 export const TRADE_POST_DIR = { x: 0, y: 1, z: 0 } as const;
+
+// Player tap collection: one log every COLLECT_LOG_INTERVAL seconds.
+export const COLLECT_LOG_INTERVAL = 0.15;
+// When true, logs collected by the player are sold instantly for credits.
+export const TAP_COLLECT_INSTANT_SELL = true;
+
+// Tap collection config
+export const TAP_RADIUS_PX = 48;
+export const TAP_RADIUS_SCALE_FACTOR = 1.6;
+export const TAP_CAMERA_FACING_DOT = 0.05;
 
 // Tree growth: small (0.35) -> medium (0.65) -> grown (1.0) over 2 minutes.
 export const GROW_STAGE_SECONDS = [60, 60] as const;
@@ -99,4 +109,3 @@ export const WORLD_CONFIG = {
   dropStartScale: 0.25,
   dropStartDistFactor: 0.4, // fraction of camera distance
 };
-

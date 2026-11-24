@@ -55,6 +55,10 @@ function stepEffects(): void {
   ctx.floaters?.update(frameDt);
 }
 
+function stepAffordance(): void {
+  ctx.affordance?.update(frameDt, ctx.state);
+}
+
 function stepRender(): void {
   ctx.sceneAPI?.render();
 }
@@ -90,6 +94,7 @@ function frame(): void {
   guard('workers', stepWorkers);
   guard('ufo', stepUfo);
   guard('effects', stepEffects);
+  guard('affordance', stepAffordance);
   guard('render', stepRender);
   guard('ui', stepUi);
   guard('autosave', stepAutosave);
@@ -118,7 +123,9 @@ export function shutdownApp(): void {
   guard('shutdown.gestures', () => ctx.updateGestures?.dispose?.());
   guard('shutdown.particles', () => ctx.particles?.dispose());
   guard('shutdown.floaters', () => ctx.floaters?.dispose());
+  guard('shutdown.affordance', () => ctx.affordance?.dispose());
   guard('shutdown.scene', () => ctx.sceneAPI?.dispose());
   ctx.particles = null;
   ctx.floaters = null;
+  ctx.affordance = null;
 }

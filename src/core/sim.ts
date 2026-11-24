@@ -5,6 +5,7 @@ import { updatePlanter } from './ai/planter';
 import { updateLumberjack } from './ai/lumberjack';
 import { updateCarrier } from './ai/carrier';
 import { plantSpeedMult } from './config/upgrades';
+import { processPlayerCollection } from './wood';
 import type { GameState, PlanetState } from './state';
 
 const TICK = 0.1;
@@ -25,6 +26,7 @@ function tickPlanet(state: GameState, pid: keyof GameState['planets'], dt: numbe
   if (!planet.unlocked) return;
 
   tickPlots(state, planet, dt);
+  processPlayerCollection(state, dt);
   tickWorkers(state, planet, dt);
 }
 

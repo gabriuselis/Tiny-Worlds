@@ -12,6 +12,7 @@ import { wireResetSaveButton, installEvents } from './app/events';
 import { startLoop } from './app/loop';
 import { initDiagnostics, logZoomDiagnostics } from './dev/diagnostics';
 import { installDevHooks } from './dev';
+import { LogPileAffordance } from './render/affordance';
 
 export { stageScaleFor } from './app/trees';
 
@@ -28,6 +29,15 @@ initGameState();
 ctx.lastTime = performance.now();
 initUi();
 initGestures();
+
+// Initialize affordance system for log pile tap hints
+if (ctx.sceneAPI) {
+  ctx.affordance = new LogPileAffordance(
+    ctx.sceneAPI.scene,
+    ctx.sceneAPI.camera,
+    ctx.planetGroup
+  );
+}
 
 installResetZoom();
 logZoomDiagnostics();

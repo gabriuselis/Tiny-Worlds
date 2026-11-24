@@ -42,6 +42,10 @@ function applyCamera(): void {
   camera.updateProjectionMatrix();
 }
 
+function getLogPlots(): any[] {
+  return ctx.state.planets.verdant.plots.filter((p: any) => p.state === 'logs' && (p.woodLeft ?? 0) > 0);
+}
+
 export function initGestures(): void {
   if (ctx.sceneAPI) {
     try {
@@ -54,6 +58,34 @@ export function initGestures(): void {
         minDist: ctx.minDist,
         maxDist: ctx.maxDist,
         debug: () => {},
+        getState: () => ctx.state,
+        getLogPlots,
+        onTapPile: (plotId: number) => {
+          const plot = ctx.state.planets.verdant.plots.find((p: any) => p.id === plotId);
+          if (!plot) return;
+          
+          // World position of the pile (slightly above surface)
+          const worldPos = new THREE.Vector3(plot.dir.x, plot.dir.y, plot.dir.z)
+            .multiplyScalar(planetRadius + 0.3);
+          const localPos = worldPos.clone();
+          
+          // Floating text for logs collected
+          if (ctx.floaters) {
+            ctx.floaters.spawn(localPos, `+${plot.woodLeft ?? 1} 🪵`);
+          }
+          
+          // Dust puff particles
+          if (ctx.particles) {
+            ctx.particles.emit('dust', { x: plot.dir.x, y: plot.dir.y, z: plot.dir.z }, 0.3, 8);
+          }
+          
+          // Haptic feedback (if supported)
+          if ('vibrate' in navigator) {
+            (navigator as any).vibrate?.(30);
+          }
+          
+          logEvent(`Tap collected pile ${plotId}`);
+        },
       });
     } catch (err) { showError('setupGestures failed', err); }
   }

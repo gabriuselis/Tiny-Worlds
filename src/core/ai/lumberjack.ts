@@ -41,6 +41,7 @@ function goIdle(w: Worker): void {
   w.chopTimer = undefined;
   w.actionTimer = undefined;
   w.stateTimer = 0;
+  w.carryingLogs = 0;
 }
 
 function findGrown(w: Worker, plots: Plot[]): Plot | undefined {
@@ -60,7 +61,7 @@ function findPile(w: Worker, plots: Plot[]): Plot | undefined {
   let best: Plot | undefined;
   let bestD = Infinity;
   for (const p of plots) {
-    if (p.state !== 'logs' || (p.woodLeft ?? 0) <= 0 || p.reservedBy !== undefined) continue;
+    if (p.state !== 'logs' || (p.woodLeft ?? 0) <= 0 || p.reservedBy !== undefined || p.beingCollected) continue;
     const d = angularDist(myDir, p.dir);
     if (d < bestD) { bestD = d; best = p; }
   }
@@ -132,6 +133,12 @@ export function updateLumberjack(w: Worker, plots: Plot[], game: GameState, dt: 
         goIdle(w);
         return;
       }
+      // If player started collecting this pile, abort
+      if (plot.state === 'logs' && plot.beingCollected) {
+        release(w, plots);
+        goIdle(w);
+        return;
+      }
       if (w.stuckTimer > WORKER_STUCK_SECONDS) {
         release(w, plots);
         goIdle(w);
@@ -194,6 +201,12 @@ case 'chopping': {
       w.stuckTimer += dt;
       const plot = plots.find((p) => p.id === w.target);
       if (!plot || plot.state !== 'logs' || plot.reservedBy !== w.id || (plot.woodLeft ?? 0) <= 0) {
+        release(w, plots);
+        goIdle(w);
+        return;
+      }
+      // If player started collecting, stop picking and go idle
+      if (plot.beingCollected && plot.collectQueue !== undefined && plot.collectQueue > 0) {
         release(w, plots);
         goIdle(w);
         return;

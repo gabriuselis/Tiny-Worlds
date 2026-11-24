@@ -6,6 +6,7 @@ import type { FloatingTextPool } from '../render/floaters';
 import type { UI } from '../ui/ui';
 import type { LayeredProgressionStore } from '../persistence/layeredStore';
 import type { Progression } from './progression';
+import type { LogPileAffordance } from '../render/affordance';
 import { planetRadius } from './constants';
 
 type Verdant = GameState['planets']['verdant'];
@@ -28,6 +29,7 @@ export interface AppContext {
   floaters: FloatingTextPool | null;
   ui: UI;
   updateGestures: any;
+  affordance: LogPileAffordance | null;
   defaultDist: number;
   minDist: number;
   maxDist: number;
@@ -45,6 +47,7 @@ export const ctx = {
   surfaceRadius: planetRadius,
   particles: null,
   floaters: null,
+  affordance: null,
   defaultDist: 10,
   minDist: 2,
   maxDist: 18,
