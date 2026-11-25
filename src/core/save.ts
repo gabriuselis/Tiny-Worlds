@@ -1,5 +1,5 @@
 ﻿import Decimal from 'break_infinity.js';
-import { initialState, SAVE_VERSION, MIN_SUPPORTED_SAVE_VERSION, type UpgradeId } from './state';
+import { initialState, SAVE_VERSION, MIN_SUPPORTED_SAVE_VERSION, type UpgradeId, type BlessingId } from './state';
 import { toMoney } from './money';
 import type { GameState } from './state';
 import { captureProgression, PROGRESSION_SCHEMA_VERSION, type ProgressionSnapshot } from './progression';
@@ -83,6 +83,8 @@ const WORKER_ROLES = new Set(['planter', 'lumberjack', 'carrier']);
 
 const UPGRADE_KEYS: UpgradeId[] = ['planter', 'lumberjack', 'carrier', 'plantSpeed', 'chopSpeed', 'woodValue', 'tapPower', 'maxTrees'];
 
+const BLESSING_KEYS: BlessingId[] = ['woodValue', 'planters', 'lumberjacks', 'carrierSpeed', 'carriers', 'woodValue2'];
+
 function normalizeUpgrades(merged: GameState): void {
   if (!merged.upgrades || typeof merged.upgrades !== 'object') {
     merged.upgrades = { planter: 0, lumberjack: 0, carrier: 0, plantSpeed: 0, chopSpeed: 0, woodValue: 0, tapPower: 0, maxTrees: 0 };
@@ -91,6 +93,13 @@ function normalizeUpgrades(merged: GameState): void {
     const v = (merged.upgrades as any)[key];
     (merged.upgrades as any)[key] = Number.isFinite(v) ? Math.max(0, Math.floor(Number(v))) : 0;
   }
+}
+
+function normalizeBlessings(merged: GameState): void {
+  if (!Array.isArray(merged.blessings)) {
+    merged.blessings = [];
+  }
+  merged.blessings = merged.blessings.filter((id) => BLESSING_KEYS.includes(id as BlessingId));
 }
 
 function normalizePlots(merged: GameState): void {
@@ -150,6 +159,10 @@ export function deserialize(json: string): GameState | null {
     normalizePlots(merged);
     normalizeWorkers(merged);
     normalizeUpgrades(merged);
+    normalizeBlessings(merged);
+    if (!Number.isFinite(merged.woodSpent?.toNumber?.())) {
+      merged.woodSpent = new Decimal(0);
+    }
     merged.version = SAVE_VERSION;
     return merged;
   } catch {

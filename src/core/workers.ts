@@ -2,7 +2,7 @@ import { costOf } from './config/workers';
 import { WORKER_IDLE_SECONDS, WORKER_APPEAR_SECONDS, shirtColorFor } from './config/worker';
 import { PLANET_RADIUS } from './config/world';
 import { gte, sub } from './money';
-import type { GameState, Role, Vec3, Worker } from './state';
+import type { GameState, Role, Vec3, Worker, UpgradeId } from './state';
 import type { IdGenerator } from './ports';
 
 function normalize(v: Vec3): Vec3 {
@@ -26,12 +26,22 @@ export function hireWorker(
   opts: { free?: boolean; spawnDir?: Vec3; ids?: IdGenerator } = {},
 ): Worker | undefined {
   const planet = state.planets.verdant;
-  const existing = planet.workers.filter((w) => w.role === role).length;
 
   if (!opts.free) {
-    const cost = costOf(role, existing);
-    if (!gte(state.currencies.credits, cost)) return undefined;
-    state.currencies.credits = sub(state.currencies.credits, cost);
+    const hireableRoles: Role[] = ['planter', 'lumberjack', 'carrier'];
+    if (hireableRoles.includes(role)) {
+      const purchased = state.upgrades[role as UpgradeId] ?? 0;
+      const cost = costOf(role, purchased);
+      if (!gte(state.currencies.credits, cost)) return undefined;
+      state.currencies.credits = sub(state.currencies.credits, cost);
+      (state.upgrades as Record<Role, number>)[role] = purchased + 1;
+    } else {
+      // For roles without upgrade tracking (miner, prospector, engineer), use worker count
+      const existing = planet.workers.filter((w) => w.role === role).length;
+      const cost = costOf(role, existing);
+      if (!gte(state.currencies.credits, cost)) return undefined;
+      state.currencies.credits = sub(state.currencies.credits, cost);
+    }
   }
 
   const dir = normalize(opts.spawnDir ?? { x: 0, y: 0, z: 1 });

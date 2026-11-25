@@ -1,12 +1,12 @@
 import * as THREE from 'three';
-import Decimal from 'break_infinity.js';
 import { upgradeCost } from '../core/config/upgrades';
 import { gte, format } from '../core/money';
-import type { Role, UpgradeId } from '../core/state';
+import type { UpgradeId } from '../core/state';
 import { UI, showToast } from '../ui/ui';
 import { ctx } from './context';
 import { showError } from './errors';
 import { addWorker } from './workerVisuals';
+import { spendableWood, getBlessingsStatus, buyBlessing } from '../core/blessings';
 
 export function initUi(): void {
   const ui = new UI(showError);
@@ -43,34 +43,30 @@ export function initUi(): void {
       } catch (err) { showError(`setUpgradeHandler: ${err instanceof Error ? err.message : err}`); }
     });
 
-    // Quick upgrade (green star): buy the cheapest affordable item among
-    // hire planter, hire lumberjack, hire carrier and the three real upgrades.
-    const quickBuy = document.getElementById('ui-quick-buy');
-    if (quickBuy) {
-      quickBuy.addEventListener('click', (e) => {
-        e.stopPropagation();
-        try {
-          const candidates: { id: UpgradeId; cost: Decimal }[] = [];
-          for (const id of ['planter', 'lumberjack', 'carrier', 'plantSpeed', 'chopSpeed', 'woodValue'] as UpgradeId[]) {
-            const cost = upgradeCost(id, state.upgrades[id]);
-            if (gte(state.currencies.credits, cost)) candidates.push({ id, cost });
-          }
-          if (candidates.length === 0) {
-            showToast('Nothing affordable yet');
-            return;
-          }
-          candidates.sort((a, b) => a.cost.toNumber() - b.cost.toNumber());
-          const target = candidates[0].id;
-          const role = target === 'planter' || target === 'lumberjack' || target === 'carrier';
-          if (role) {
-            addWorker(target as Role);
-          } else {
-            ctx.progression.upgrade(target);
-          }
+    ui.setBlessingHandler((id: string) => {
+      try {
+        const ok = buyBlessing(state, id as any);
+        if (ok) {
+          showToast(`Blessing unlocked: ${id}`);
           ctx.uiNeedsUpdate = true;
-        } catch (err) { showError('quick buy failed', err); }
-      });
-    }
+        } else {
+          const status = getBlessingsStatus(state);
+          const blessing = status.find((b) => b.config && b.config.id === id);
+          if (blessing?.owned) {
+            showToast('Already owned');
+          } else if (blessing?.config) {
+            showToast(`Not enough wood (need ${format(blessing.config.woodCost)})`);
+          } else {
+            showToast('Blessing not found');
+          }
+        }
+      } catch (err) { showError(`setBlessingHandler: ${err instanceof Error ? err.message : err}`); }
+    });
+
+    // Expose blessings API for modal live updates
+    (window as any).__blessingsAPI = { spendableWood, getBlessingsStatus };
+    (window as any).__gameState = state;
+    (window as any).__addWood = (amt: number) => { state.wood = state.wood.add(amt); ctx.uiNeedsUpdate = true; };
 
     ui.setDevHandlers({
       onToggleSpeed: () => { /* handled by UI internally */ },

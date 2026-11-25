@@ -82,6 +82,7 @@ export function resetGame(g: GameState, nowMs = 0): void {
   g.currencies.starDust = fresh.currencies.starDust;
   g.wood = fresh.wood;
   g.woodToSell = fresh.woodToSell;
+  g.woodSpent = fresh.woodSpent;
   g.simSeconds = 0;
   g.woodLogTimes.length = 0;
 
@@ -101,6 +102,7 @@ export function resetGame(g: GameState, nowMs = 0): void {
   }
 
   g.upgrades = { ...fresh.upgrades };
+  g.blessings = [...fresh.blessings];
   g.prestige = { count: fresh.prestige.count, starDust: fresh.prestige.starDust, perks: { ...fresh.prestige.perks } };
   g.quests.length = 0;
   g.stats = { ...fresh.stats };

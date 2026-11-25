@@ -16,7 +16,9 @@ export interface ProgressionSnapshot {
   currencies: GameState['currencies'];
   wood: GameState['wood'];
   woodToSell: GameState['woodToSell'];
+  woodSpent: GameState['woodSpent'];
   upgrades: GameState['upgrades'];
+  blessings: GameState['blessings'];
   prestige: GameState['prestige'];
   quests: GameState['quests'];
   stats: GameState['stats'];
@@ -42,8 +44,9 @@ export function captureProgression(state: GameState, revision: number, updatedAt
   }
   return {
     schemaVersion: PROGRESSION_SCHEMA_VERSION, revision, updatedAt,
-    currencies: { ...state.currencies }, wood: state.wood, woodToSell: state.woodToSell,
+    currencies: { ...state.currencies }, wood: state.wood, woodToSell: state.woodToSell, woodSpent: state.woodSpent,
     upgrades: { ...state.upgrades },
+    blessings: [...state.blessings],
     prestige: { ...state.prestige, perks: { ...state.prestige.perks } },
     quests: state.quests.map((q) => ({ ...q })), stats: { ...state.stats },
     settings: { ...state.settings }, planets,
@@ -55,7 +58,9 @@ export function applyProgression(state: GameState, snapshot: ProgressionSnapshot
   Object.assign(state.currencies, snapshot.currencies);
   state.wood = snapshot.wood;
   state.woodToSell = snapshot.woodToSell;
+  state.woodSpent = snapshot.woodSpent;
   Object.assign(state.upgrades, snapshot.upgrades);
+  state.blessings.splice(0, state.blessings.length, ...snapshot.blessings);
   state.prestige.count = snapshot.prestige.count;
   state.prestige.starDust = snapshot.prestige.starDust;
   Object.assign(state.prestige.perks, snapshot.prestige.perks);

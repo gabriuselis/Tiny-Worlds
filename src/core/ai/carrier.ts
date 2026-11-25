@@ -7,9 +7,9 @@ import { WORKER_RUN_SPEED, WORKER_STUCK_SECONDS } from '../config/worker';
 import { recordLogTaken, sellDeliveredLogs } from '../wood';
 import { angularDist, dirFromPos, dirToPos, advance, standSpotDir } from './motion';
 import type { GameState, Plot, Worker } from '../state';
+import { blessingCarrierSpeedMultiplier } from '../blessings';
 
 const PICKUP_SECONDS = WORLD_CONFIG.pickupTime;
-const PER_LOG_SECONDS = PICKUP_SECONDS / LOG_LOGS_PER_PILE;
 const CARRY_CAPACITY = WORLD_CONFIG.carryCapacity;
 const STANDING = WORLD_CONFIG.standingOffset;
 const RETRY = WORLD_CONFIG.lumberjackRetry;
@@ -51,7 +51,23 @@ function startWalk(w: Worker, plot: Plot): void {
   w.stateTimer = (angularDist(dirFromPos(w.pos), w.standDir) * WORLD_CONFIG.planetRadius) / WORKER_RUN_SPEED;
 }
 
+function carrierSpeed(game: GameState): number {
+  return WORKER_RUN_SPEED * blessingCarrierSpeedMultiplier(game);
+}
+
+function pickupTime(game: GameState): number {
+  return PICKUP_SECONDS / blessingCarrierSpeedMultiplier(game);
+}
+
+function perLogSeconds(game: GameState): number {
+  return pickupTime(game) / LOG_LOGS_PER_PILE;
+}
+
 export function updateCarrier(w: Worker, plots: Plot[], game: GameState, dt: number): void {
+  const speed = carrierSpeed(game);
+  const pickTime = pickupTime(game);
+  const perLog = perLogSeconds(game);
+
   switch (w.state) {
     case 'idle': {
       w.stateTimer = Math.max(0, (w.stateTimer ?? 0) - dt);
@@ -91,14 +107,14 @@ export function updateCarrier(w: Worker, plots: Plot[], game: GameState, dt: num
       }
 
       const stand = w.standDir ?? standSpotDir(plot.dir, dirFromPos(w.pos), STANDING);
-      const adv = advance(w.pos, stand, WORKER_RUN_SPEED, dt);
+      const adv = advance(w.pos, stand, speed, dt);
       w.pos = dirToPos(adv.dir);
-      w.stateTimer = (adv.remaining * WORLD_CONFIG.planetRadius) / WORKER_RUN_SPEED;
+      w.stateTimer = (adv.remaining * WORLD_CONFIG.planetRadius) / speed;
       if (!adv.arrived) return;
 
       w.state = 'picking';
-      w.actionTimer = PICKUP_SECONDS;
-      w.stateTimer = PICKUP_SECONDS;
+      w.actionTimer = pickTime;
+      w.stateTimer = pickTime;
       w.stuckTimer = 0;
       return;
     }
@@ -118,12 +134,12 @@ export function updateCarrier(w: Worker, plots: Plot[], game: GameState, dt: num
         goIdle(w);
         return;
       }
-      w.actionTimer = Math.max(0, (w.actionTimer ?? PICKUP_SECONDS) - dt);
+      w.actionTimer = Math.max(0, (w.actionTimer ?? pickTime) - dt);
       w.stateTimer = w.actionTimer;
 
-      // One log roughly every 0.5 s (PICKUP_SECONDS / 3): wood ticks up per log.
-      const elapsed = PICKUP_SECONDS - w.actionTimer;
-      const desired = Math.min(CARRY_CAPACITY, Math.floor(elapsed / PER_LOG_SECONDS + 1e-9));
+      // One log roughly every PER_LOG_SECONDS: wood ticks up per log.
+      const elapsed = pickTime - w.actionTimer;
+      const desired = Math.min(CARRY_CAPACITY, Math.floor(elapsed / perLog + 1e-9));
       let take = Math.min(desired - (w.carryingLogs ?? 0), plot.woodLeft ?? 0);
       while (take > 0) {
         recordLogTaken(game, w.id, plot.id, 'carrier');
@@ -149,10 +165,10 @@ export function updateCarrier(w: Worker, plots: Plot[], game: GameState, dt: num
 
     case 'carrying': {
       w.stuckTimer += dt;
-      const speed = WORKER_RUN_SPEED * (w.carryingLogs && w.carryingLogs > 0 ? 0.85 : 1);
-      const adv = advance(w.pos, TRADE_POST_DIR, speed, dt);
+      const carrySpeed = speed * (w.carryingLogs && w.carryingLogs > 0 ? 0.85 : 1);
+      const adv = advance(w.pos, TRADE_POST_DIR, carrySpeed, dt);
       w.pos = dirToPos(adv.dir);
-      w.stateTimer = (adv.remaining * WORLD_CONFIG.planetRadius) / speed;
+      w.stateTimer = (adv.remaining * WORLD_CONFIG.planetRadius) / carrySpeed;
       if (adv.arrived) {
         w.state = 'delivering';
         w.actionTimer = DELIVER_SECONDS;

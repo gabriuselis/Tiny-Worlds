@@ -1,11 +1,12 @@
 ﻿import Decimal from 'break_infinity.js';
 import { PLANETS } from '../core/config/planets';
 import { costOf } from '../core/config/workers';
-import { upgradeCost, upgradeMaxLevel, plantSpeedMult, chopSpeedMult, woodValueMult } from '../core/config/upgrades';
+import { upgradeCost, upgradeMaxLevel, plantSpeedMult, chopSpeedMult } from '../core/config/upgrades';
 import { incomePerSecond } from '../core/economy';
 import { format, gte } from '../core/money';
 import { PLOT_COUNT } from '../core/config/world';
 import { logsPerMinute } from '../core/wood';
+import { totalWoodValueMultiplier, hasAffordableBlessing } from '../core/blessings';
 import type { GameState, Role, UpgradeId } from '../core/state';
 
 // ============================================================
@@ -179,16 +180,19 @@ export interface UIHandlers {
   onDevClear: () => void;
   onDevReset: () => void;
   onDevToggleGrid: () => void;
+  onBuyBlessing: (id: string) => void;
+  onAddWood: () => void;
 }
 
 type ReportError = (msg: string) => void;
 
 export class UI {
   private root: HTMLElement;
-private speedActive = false;
+  private speedActive = false;
   private autoActive = false;
   private hireHandlers: Partial<Record<Role, () => void>> = {};
   private upgradeHandler: ((id: UpgradeId) => void) | null = null;
+  private blessingHandler: ((id: string) => void) | null = null;
   private reportError?: ReportError;
 
   private elCredits!: HTMLElement;
@@ -203,6 +207,7 @@ private speedActive = false;
   private elSpeedBtn!: HTMLElement;
   private elAutoBtn!: HTMLElement;
   private elUpgradePanel!: HTMLElement;
+  private elBlessingsBtn!: HTMLElement;
 
   // Cached last values for change detection (only patch when changed)
   private lastCredits = '';
@@ -214,18 +219,23 @@ private speedActive = false;
   private lastGoal = '';
   private lastSpeedActive = false;
   private lastAutoActive = false;
+  private lastBlessingAffordable = false;
 
   // Progress dot elements (built once)
   private progressDots: HTMLElement[] = [];
   private progressLines: HTMLElement[] = [];
 
   // Upgrade card element refs (built once)
-private cardBtns = new Map<UpgradeId, HTMLButtonElement>();
+  private cardBtns = new Map<UpgradeId, HTMLButtonElement>();
   private cardVals = new Map<UpgradeId, HTMLElement>();
   private cardCosts = new Map<UpgradeId, HTMLElement>();
   private cardLabels = new Map<UpgradeId, HTMLElement>();
   private cardUpgradeLines = new Map<UpgradeId, HTMLElement>();
   private lastCardValues = new Map<UpgradeId, { value: string; cost: string; affordable: boolean; line: string; label: string }>();
+
+  // Blessings modal
+  private elBlessingsModal: HTMLElement | null = null;
+  private blessingsModalOpen = false;
 
   // Dev menu handler callbacks
   private devHandlers: Partial<Record<string, () => void>> = {};
@@ -306,7 +316,7 @@ private cardBtns = new Map<UpgradeId, HTMLButtonElement>();
     <div class="floating-col right" data-area-right>
       <button class="fab" title="Alien chat">&#128172;</button>
       <button class="fab" title="Focus camera">&#128065;</button>
-      <button class="fab green" id="ui-quick-buy" title="Quick upgrade">&#11088;</button>
+      <button class="fab green" id="ui-quick-buy" title="Blessings">&#11088;</button>
     </div>
   </div>
 
@@ -373,6 +383,7 @@ private cardBtns = new Map<UpgradeId, HTMLButtonElement>();
       this.elSpeedBtn = this.el('ui-speed');
       this.elAutoBtn = this.el('ui-auto');
       this.elUpgradePanel = this.el('ui-upgrade-panel');
+      this.elBlessingsBtn = this.el('ui-quick-buy');
     });
 
     this.safe('speed/auto click listeners', () => {
@@ -385,6 +396,13 @@ private cardBtns = new Map<UpgradeId, HTMLButtonElement>();
         this.autoActive = !this.autoActive;
         this.elAutoBtn.classList.toggle('active', this.autoActive);
         this.devHandlers.onToggleAuto?.();
+      });
+    });
+
+    this.safe('blessings button', () => {
+      this.elBlessingsBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.toggleBlessingsModal();
       });
     });
 
@@ -465,6 +483,10 @@ const nameDiv = document.createElement('div');
     this.upgradeHandler = fn;
   }
 
+  setBlessingHandler(fn: (id: string) => void): void {
+    this.blessingHandler = fn;
+  }
+
   /** Quick 1.0 -> 1.25 -> 1.0 pulse on the Wood number. */
   bumpWood(): void {
     try {
@@ -482,6 +504,174 @@ const nameDiv = document.createElement('div');
 
   isAutoActive(): boolean {
     return this.autoActive;
+  }
+
+  private toggleBlessingsModal(): void {
+    if (this.blessingsModalOpen) {
+      this.closeBlessingsModal();
+    } else {
+      this.openBlessingsModal();
+    }
+  }
+
+  private openBlessingsModal(): void {
+    if (this.blessingsModalOpen) return;
+    this.buildBlessingsModal();
+    if (!this.elBlessingsModal) return;
+    
+    document.body.appendChild(this.elBlessingsModal);
+    this.blessingsModalOpen = true;
+    this.updateBlessingsModal();
+    // Focus trap: prevent background interaction
+    document.body.style.overflow = 'hidden';
+  }
+
+  private closeBlessingsModal(): void {
+    if (!this.blessingsModalOpen || !this.elBlessingsModal) return;
+    this.elBlessingsModal.remove();
+    this.blessingsModalOpen = false;
+    document.body.style.overflow = '';
+  }
+
+  private buildBlessingsModal(): void {
+    if (this.elBlessingsModal) return;
+    
+    const modal = document.createElement('div');
+    modal.id = 'blessings-modal';
+    modal.className = 'blessings-modal';
+    modal.innerHTML = `
+      <div class="blessings-backdrop"></div>
+      <div class="blessings-panel">
+        <div class="blessings-header">
+          <div class="blessings-title">Blessings</div>
+          <button type="button" class="blessings-close" id="blessings-close" title="Close">&#10006;</button>
+        </div>
+        <div class="blessings-wood">Spendable wood: <span id="blessings-wood">0</span></div>
+        <div class="blessings-list" id="blessings-list"></div>
+      </div>
+    `;
+    
+    this.elBlessingsModal = modal;
+    
+    // Close on backdrop click
+    const backdrop = modal.querySelector('.blessings-backdrop')!;
+    backdrop.addEventListener('click', () => this.closeBlessingsModal());
+    
+    // Close on X button
+    const closeBtn = modal.querySelector('#blessings-close')!;
+    closeBtn.addEventListener('click', () => this.closeBlessingsModal());
+    
+    // Prevent clicks inside panel from closing
+    const panel = modal.querySelector('.blessings-panel')!;
+    panel.addEventListener('click', (e) => e.stopPropagation());
+  }
+
+  private updateBlessingsModal(): void {
+    if (!this.blessingsModalOpen || !this.elBlessingsModal) return;
+    
+    const state = (window as any).__gameState;
+    if (!state) return;
+    
+    const { spendableWood, getBlessingsStatus } = (window as any).__blessingsAPI || {};
+    if (!spendableWood || !getBlessingsStatus) return;
+    
+    const spendable = spendableWood(state);
+    const woodEl = this.elBlessingsModal.querySelector('#blessings-wood')!;
+    woodEl.textContent = this.formatNumber(spendable.toNumber());
+    
+    const listEl = this.elBlessingsModal.querySelector('#blessings-list')!;
+    const status = getBlessingsStatus(state);
+    
+    // Build cards if empty, otherwise update
+    if (listEl.children.length === 0) {
+      for (const b of status) {
+        const card = this.createBlessingCard(b.config.id, b.config.title, b.config.description, b.config.woodCost.toNumber(), b.owned, b.affordable);
+        listEl.appendChild(card);
+      }
+    } else {
+      // Update existing cards
+      for (const b of status) {
+        const card = listEl.querySelector(`[data-blessing-id="${b.config.id}"]`) as HTMLElement;
+        if (card) {
+          const buyBtn = card.querySelector('.blessing-buy-btn') as HTMLButtonElement;
+          const costEl = card.querySelector('.blessing-cost') as HTMLElement;
+          if (b.owned) {
+            card.classList.add('owned');
+            if (buyBtn) {
+              buyBtn.textContent = 'OWNED';
+              buyBtn.disabled = true;
+              buyBtn.classList.add('disabled');
+            }
+            if (costEl) costEl.style.display = 'none';
+          } else {
+            card.classList.remove('owned');
+            if (buyBtn) {
+              buyBtn.textContent = 'BUY';
+              buyBtn.disabled = !b.affordable;
+              buyBtn.classList.toggle('disabled', !b.affordable);
+            }
+            if (costEl) {
+              costEl.style.display = '';
+              costEl.textContent = `🪵 ${this.formatNumber(b.config.woodCost.toNumber())}`;
+            }
+          }
+        }
+      }
+}
+    
+  }
+
+  private createBlessingCard(id: string, title: string, description: string, cost: number, owned: boolean, affordable: boolean): HTMLElement {
+    const card = document.createElement('div');
+    card.className = 'blessing-card' + (owned ? ' owned' : '');
+    card.dataset.blessingId = id;
+    
+    const left = document.createElement('div');
+    left.className = 'blessing-info';
+    
+    const titleEl = document.createElement('div');
+    titleEl.className = 'blessing-title-text';
+    titleEl.textContent = title;
+    left.appendChild(titleEl);
+    
+    const descEl = document.createElement('div');
+    descEl.className = 'blessing-desc';
+    descEl.textContent = description;
+    left.appendChild(descEl);
+    
+    const right = document.createElement('div');
+    right.className = 'blessing-buy-area';
+    
+    const costEl = document.createElement('div');
+    costEl.className = 'blessing-cost';
+    costEl.textContent = `🪵 ${this.formatNumber(cost)}`;
+    if (owned) costEl.style.display = 'none';
+    right.appendChild(costEl);
+    
+    const btn = document.createElement('button');
+    btn.className = 'blessing-buy-btn' + (owned ? ' disabled' : '') + (!affordable && !owned ? ' disabled' : '');
+    btn.textContent = owned ? 'OWNED' : 'BUY';
+    btn.disabled = owned || !affordable;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!owned && affordable && this.blessingHandler) {
+        this.blessingHandler(id);
+        this.updateBlessingsModal();
+      }
+    });
+    right.appendChild(btn);
+    
+    card.appendChild(left);
+    card.appendChild(right);
+    
+    return card;
+  }
+
+  private formatNumber(n: number): string {
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + 'b';
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + 'm';
+    if (n >= 1e3) return (n / 1e3).toFixed(2) + 'k';
+    return Math.floor(n).toString();
   }
 
   updateUI(state: GameState): void {
@@ -555,12 +745,19 @@ const nameDiv = document.createElement('div');
       this.elSpeedBtn.classList.toggle('active', this.speedActive);
       this.lastSpeedActive = this.speedActive;
     }
-    if (this.autoActive !== this.lastAutoActive) {
+if (this.autoActive !== this.lastAutoActive) {
       this.elAutoBtn.classList.toggle('active', this.autoActive);
       this.lastAutoActive = this.autoActive;
     }
 
-// Upgrade cards (only patch when value/cost/affordable changes)
+    // Star button: green when any non-owned blessing is affordable
+    const blessingAffordable = hasAffordableBlessing(state);
+    if (blessingAffordable !== this.lastBlessingAffordable) {
+      this.elBlessingsBtn.classList.toggle('green', blessingAffordable);
+      this.lastBlessingAffordable = blessingAffordable;
+    }
+
+    // Upgrade cards (only patch when value/cost/affordable changes)
     for (const s of CARD_SPECS) {
       const level = state.upgrades[s.id];
       const maxLevel = upgradeMaxLevel(s.id);
@@ -574,9 +771,16 @@ const nameDiv = document.createElement('div');
 
       if (isHire) {
         const role = HIRE_ROLES[s.id]!;
+        const hireableRoles: Role[] = ['planter', 'lumberjack', 'carrier'];
+        let purchased = 0;
+        if (hireableRoles.includes(role)) {
+          purchased = state.upgrades[role as UpgradeId] ?? 0;
+        } else {
+          purchased = verdant.workers.filter((w) => w.role === role).length;
+        }
         const existing = verdant.workers.filter((w) => w.role === role).length;
         valueText = `${HIRE_VALUE_LABEL[role] ?? role}: ${existing}`;
-        cost = costOf(role, existing);
+        cost = costOf(role, purchased);
         affordable = gte(c, cost);
       } else {
         valueText = String(level);
@@ -592,7 +796,10 @@ const nameDiv = document.createElement('div');
         let pct = 0;
         if (s.id === 'plantSpeed') pct = (1 - plantSpeedMult(level)) * 100;
         else if (s.id === 'chopSpeed') pct = (1 - chopSpeedMult(level)) * 100;
-        else if (s.id === 'woodValue') pct = (woodValueMult(level) - 1) * 100;
+        else if (s.id === 'woodValue') {
+          const totalMult = totalWoodValueMultiplier(state);
+          pct = (totalMult - 1) * 100;
+        }
         const sign = pct < 0 ? '' : '+';
         lineText = `Lv ${level} | Now: ${sign}${pct.toFixed(0)}%`;
       }
@@ -722,6 +929,7 @@ function createDevMenu(): void {
       <button type="button" class="dev-btn" id="dev-grow-all">Grow all trees</button>
       <button type="button" class="dev-btn" id="dev-spawn-piles">Spawn 10 log piles</button>
       <button type="button" class="dev-btn" id="dev-add-wood">+10 wood</button>
+      <button type="button" class="dev-btn" id="dev-add-wood-100k">Add 100k wood</button>
       <button type="button" class="dev-btn" id="dev-test-particles">Emit test particles</button>
       <button type="button" class="dev-btn" id="dev-wood-test">Run wood self-test</button>
       <button type="button" class="dev-btn" id="dev-tap-test">Tap collect self-test</button>
@@ -828,6 +1036,7 @@ const actions: { [id: string]: () => void } = {
     'dev-grow-all': () => (window as any).__growAllTrees?.(),
     'dev-spawn-piles': () => (window as any).__spawnLogPiles?.(10),
     'dev-add-wood': () => (window as any).__addWood?.(10),
+    'dev-add-wood-100k': () => (window as any).__addWood?.(100000),
     'dev-test-particles': () => (window as any).__emitTestParticles?.(),
     'dev-wood-test': () => (window as any).__runWoodSelfTest?.(),
     'dev-tap-test': () => (window as any).__runTapCollectSelfTest?.(),

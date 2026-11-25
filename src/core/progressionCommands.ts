@@ -2,11 +2,14 @@ import Decimal from 'break_infinity.js';
 import { WOOD_PRICE } from './config/world';
 import { add, sub, toMoney } from './money';
 import type { GameState } from './state';
+import { blessingWoodValueMultiplier } from './blessings';
 
 /** Deterministic sale command; the caller may record UI/debug effects separately. */
 export function sellWood(state: GameState, logs: number): Decimal {
   if (!Number.isFinite(logs) || logs <= 0) return toMoney(0);
-  const valueMult = 1 + 0.1 * (state.upgrades.woodValue ?? 0);
+  const upgradeMult = 1 + 0.1 * (state.upgrades.woodValue ?? 0);
+  const blessingMult = blessingWoodValueMultiplier(state);
+  const valueMult = upgradeMult * blessingMult;
   const earned = toMoney(logs * WOOD_PRICE * valueMult);
   state.currencies.credits = add(state.currencies.credits, earned);
   state.woodToSell = sub(state.woodToSell, toMoney(Math.min(logs, state.woodToSell.toNumber())));

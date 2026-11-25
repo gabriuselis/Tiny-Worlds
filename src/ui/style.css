@@ -775,3 +775,180 @@ body {
   50% { transform: scale(1.25); }
   100% { transform: scale(1); }
 }
+
+/* ---------- Blessings Modal ---------- */
+.blessings-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  pointer-events: auto;
+  font-family: inherit;
+}
+
+.blessings-backdrop {
+  position: absolute;
+  inset: 0;
+}
+
+.blessings-panel {
+  position: relative;
+  width: min(320px, 94vw);
+  max-height: 90vh;
+  margin: auto;
+  background: var(--panel2);
+  border: 3px solid var(--outline);
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.9);
+}
+
+.blessings-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 2px solid var(--outline-dim);
+  background: var(--panel);
+}
+
+.blessings-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+}
+
+.blessings-close {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 2.5px solid var(--badge);
+  background: var(--panel2);
+  color: var(--badge);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.blessings-close:active {
+  background: var(--badge);
+  color: #000;
+}
+
+.blessings-wood {
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text-muted);
+  background: var(--panel);
+  border-bottom: 1px solid var(--outline-dim);
+}
+
+.blessings-wood span {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.blessings-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.blessing-card {
+  border: 3px solid var(--outline);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 60px;
+}
+
+.blessing-card.owned {
+  border-color: var(--outline-dim);
+  opacity: 0.7;
+}
+
+.blessing-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.blessing-title-text {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.blessing-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.blessing-buy-area {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.blessing-cost {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.blessing-buy-btn {
+  border: 2.5px solid var(--outline-dim);
+  background: var(--panel2);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  pointer-events: auto;
+}
+
+.blessing-buy-btn:active {
+  transform: scale(0.95);
+}
+
+.blessing-buy-btn.disabled {
+  opacity: 0.45;
+  border-color: #444;
+  color: #666;
+  cursor: not-allowed;
+}

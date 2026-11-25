@@ -19,7 +19,7 @@ Built: sphere planet with 1500 plots, instanced trees, Planter/Lumberjack/Carrie
 Placeholders: side buttons, Prestige/Workers/Aliens/Shop tabs, AUTO BUY, 2X SPEED, quests, achievements.
 
 ## Current task
-Tap-to-collect hardening: one tap collects one pile, wood +3 exactly once, plot becomes empty immediately, reservation released, no double count with carriers. Then: camera zoom (start with whole planet, zoom out up to 1.8x farther).
+Tap-to-collect hardening: one tap collects one pile, wood +3 exactly once, plot becomes empty immediately, reservation released, no double count with carriers. Then: camera zoom (start with whole planet, zoom out up to 1.8x farther). Blessings: wood-priced one-time upgrades opened from the star button.
 
 ## Roadmap
 1. Stabilize Planet 1 (tap-collect, camera).
@@ -27,6 +27,7 @@ Tap-to-collect hardening: one tap collects one pile, wood +3 exactly once, plot 
 3. Offline progress, quests, events, tutorial.
 4. Playtest with friends, then Planet 2 (Rocky, Miner).
 5. Prestige, factories, monetization, Capacitor wrapper.
+6. Blessings board
 
 ## Do not
 Do not start Planet 2 or new systems before Planet 1 is stable and tested.
